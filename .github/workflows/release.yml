@@ -19,8 +19,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: 22
+          # No `cache: npm` — this repo has no package-lock.json, and setup-node
+          # hard-fails ("Dependencies lock file is not found") rather than just
+          # skipping the cache. Commit a lockfile and this can come back.
 
       - name: Install dependencies
         run: npm install
