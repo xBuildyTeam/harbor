@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Harbor</title>
+  <link rel="stylesheet" href="dock.css">
+</head>
+<body>
+  <div class="dock-container">
+    <!-- Header Bar (Draggable) -->
+    <header class="header-bar">
+      <div class="logo-section">
+        <img src="../assets/icon.png" alt="Wave OS" class="wave-logo" />
+        <span class="app-title">Harbor</span>
+      </div>
+      <div class="header-controls">
+        <!-- Expand Button -->
+        <button id="btn-expand" class="icon-btn" title="Expand to Full Mode">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <polyline points="9 21 3 21 3 15"></polyline>
+            <line x1="21" y1="3" x2="14" y2="10"></line>
+            <line x1="3" y1="21" x2="10" y2="14"></line>
+          </svg>
+        </button>
+        <!-- Minimize Button -->
+        <button id="btn-minimize" class="icon-btn" title="Minimize">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
+        <!-- Close Button -->
+        <button id="btn-close" class="icon-btn close" title="Hide to Tray">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="content-area">
+      
+      <!-- Card 1: Wave OS Status Card -->
+      <section class="status-card">
+        <div class="card-header">
+          <div class="card-info">
+            <div id="dot-wave" class="status-dot online"></div>
+            <span class="card-title">app.oswave.io</span>
+          </div>
+          <button id="btn-open-wave" class="card-btn">Open Wave OS</button>
+        </div>
+        <div class="card-body">
+          <span class="card-subtitle">Wave OS Cloud Portal</span>
+          <span id="label-wave-status" class="card-subtitle" style="color: var(--green); font-weight: 600;">Online</span>
+        </div>
+      </section>
+
+      <!-- Card 2: Local AI status card -->
+      <section class="status-card">
+        <div class="card-header">
+          <div class="card-info">
+            <div id="dot-ollama" class="status-dot offline"></div>
+            <span class="card-title">Local AI (Ollama)</span>
+          </div>
+          <button id="btn-toggle-ollama" class="card-btn">Start Ollama</button>
+        </div>
+        <div class="card-body">
+          <span class="card-subtitle">Model: <strong id="lbl-active-model" style="color: var(--teal);">None</strong></span>
+          <span id="label-ollama-status" class="card-subtitle">Stopped</span>
+        </div>
+      </section>
+
+      <!-- Card 3: Tunnel status card -->
+      <section class="status-card">
+        <div class="card-header">
+          <div class="card-info">
+            <div id="dot-tunnel" class="status-dot offline"></div>
+            <span class="card-title">Cloudflare Tunnel</span>
+          </div>
+          <button id="btn-toggle-tunnel" class="card-btn">Start Tunnel</button>
+        </div>
+        <div class="card-body">
+          <span class="card-subtitle">Public Endpoints</span>
+          <span id="tunnel-url-text" class="interactive-text" title="Click to copy public URL">Inactive</span>
+        </div>
+      </section>
+
+      <!-- Card 4: Theta EdgeCloud AI status card -->
+      <section id="theta-status-card" class="status-card">
+        <div class="card-header">
+          <div class="card-info">
+            <div id="dot-theta" class="status-dot offline"></div>
+            <span class="card-title">Theta EdgeCloud AI</span>
+          </div>
+          <span id="label-theta-status" class="card-subtitle">No Token</span>
+        </div>
+        <div class="card-body">
+          <span class="card-subtitle">AI Mode: <strong id="lbl-ai-mode" style="color: var(--teal);">Auto</strong></span>
+          <div class="ai-mode-selector">
+            <button class="mode-btn active" data-mode="auto">Auto</button>
+            <button class="mode-btn" data-mode="local">Local</button>
+            <button class="mode-btn" data-mode="theta">Theta</button>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- Card 5: Quick Actions Row -->
+      <section class="quick-actions-row">
+        <button id="btn-chat" class="quick-btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+          </svg>
+          Open Wave OS
+        </button>
+        <button id="btn-settings" class="quick-btn secondary">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          Settings
+        </button>
+      </section>
+
+    </main>
+
+    <!-- Toast Notifications system -->
+    <div id="toast" class="toast-container">
+      <span id="toast-icon" class="toast-icon">ℹ️</span>
+      <span id="toast-message">Notification message here</span>
+    </div>
+
+    <!-- Settings Modal Layer -->
+    <div id="settings-modal" class="modal-overlay">
+      <div class="modal-box">
+        <h3 class="modal-title">Harbor Settings</h3>
+        <div class="settings-group">
+          <div class="settings-row">
+            <span>Ollama API Port</span>
+            <input type="text" id="setting-port" class="settings-input" value="11434" disabled>
+          </div>
+          <div class="settings-row" style="margin-top: 6px;">
+            <span>Default Local Model</span>
+            <input type="text" id="setting-model" class="settings-input" value="llama3:latest">
+          </div>
+          <div class="settings-row" style="margin-top: 6px;">
+            <span>Cloudflare Tunnel</span>
+            <span style="color: var(--muted); font-size: 10px;">Quick Tunnel</span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="btn-settings-cancel" class="card-btn">Cancel</button>
+          <button id="btn-settings-save" class="card-btn primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Shared modules & App logic -->
+  <script src="shared.js"></script>
+  <script src="dock.js"></script>
+</body>
+</html>

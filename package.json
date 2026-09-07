@@ -1,0 +1,33 @@
+{
+  "name": "harbor",
+  "version": "3.0.0",
+  "description": "Harbor \u2014 secure local file access and local AI for Wave OS",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --win nsis msi",
+    "build:portable": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "io.oswave.harbor",
+    "productName": "Harbor",
+    "win": {
+      "target": [
+        "nsis",
+        "msi"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "electron": "^30.5.1"
+  },
+  "devDependencies": {
+    "electron-builder": "^25.1.8"
+  }
+}

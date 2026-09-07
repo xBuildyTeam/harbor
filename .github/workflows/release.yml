@@ -1,0 +1,57 @@
+name: "Release Harbor"
+
+# Tag to ship installers:
+#   git tag v1.0.0 && git push origin v1.0.0
+# Public repo => GitHub Actions minutes are free, so the matrix is cheap.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      # electron-builder reads the "build" block in package.json:
+      # appId io.oswave.harbor, targets nsis + msi, icon build/icon.ico
+      - name: Build Windows installers
+        run: npx electron-builder --win nsis msi --publish never
+
+      - name: Publish SHA256 checksums
+        shell: bash
+        run: |
+          cd dist
+          # Users are installing an agent that gets filesystem access and pairs
+          # to their cloud account. Checksums are the minimum.
+          sha256sum *.exe *.msi > SHA256SUMS.txt 2>/dev/null || true
+          cat SHA256SUMS.txt
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: "Harbor ${{ github.ref_name }}"
+          body: |
+            Harbor connects your local filesystem and local AI to Wave OS.
+
+            **Windows** — download the `.exe` (recommended) or `.msi`.
+            Verify against `SHA256SUMS.txt` before installing.
+
+            After installing, open Harbor and pair it with Wave OS.
+          files: |
+            dist/*.exe
+            dist/*.msi
+            dist/SHA256SUMS.txt

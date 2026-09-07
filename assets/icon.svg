@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="waveGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2ee6c5" />
+      <stop offset="100%" stop-color="#3a8cff" />
+    </linearGradient>
+  </defs>
+  <!-- Background panel with subtle rounded corners and thin border -->
+  <rect width="64" height="64" rx="16" fill="#0d1520" stroke="rgba(120, 190, 220, 0.15)" stroke-width="1.5"/>
+  
+  <!-- Outer glowing wave -->
+  <path d="M12 32 C 16 16, 20 16, 24 32 C 28 48, 32 48, 36 32 C 40 16, 44 16, 48 32 C 50 40, 52 40, 54 32" 
+        stroke="url(#waveGradient)" 
+        stroke-width="4" 
+        stroke-linecap="round" 
+        stroke-linejoin="round" />
+        
+  <!-- Secondary soft/ambient inner wave -->
+  <path d="M15 32 C 18 22, 21 22, 24 32 C 27 42, 30 42, 33 32 C 36 22, 39 22, 42 32 C 45 42, 48 42, 51 32" 
+        stroke="url(#waveGradient)" 
+        stroke-width="2" 
+        stroke-opacity="0.4" 
+        stroke-linecap="round" 
+        stroke-linejoin="round" />
+</svg>
