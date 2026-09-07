@@ -24,10 +24,13 @@
       "allowToChangeInstallationDirectory": true
     }
   },
-  "dependencies": {
+  "devDependencies": {
+    "electron-builder": "^25.1.8",
     "electron": "^30.5.1"
   },
-  "devDependencies": {
-    "electron-builder": "^25.1.8"
-  }
+  "author": {
+    "name": "xBuildy",
+    "email": "info@xbuildy.com"
+  },
+  "license": "UNLICENSED"
 }
