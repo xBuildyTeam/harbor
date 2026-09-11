@@ -60,4 +60,37 @@ async function callHarborPair(action, body = {}, timeoutMs = 12000) {
   return { ok: false, error: lastError };
 }
 
-module.exports = { generateCode, callHarborPair, localPlatform, localDeviceName };
+// Same two hosts, different function. Verified live: accepts
+// { device_token, is_online, shared_folders } and returns { ok, device_id, folder_count }.
+const SYNC_ENDPOINTS = [
+  'https://app.oswave.io/api/functions/harborDeviceSync',
+  `https://base44.app/api/apps/${WAVE_OS_APP_ID}/functions/harborDeviceSync`,
+];
+
+async function callHarborDeviceSync(payload, timeoutMs = 12000) {
+  let lastError = 'Could not reach Wave OS';
+  for (const url of SYNC_ENDPOINTS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) return { ok: true, data };
+      return { ok: false, status: res.status, error: data.error || `HTTP ${res.status}` };
+    } catch (e) {
+      lastError = (e && e.name === 'AbortError') ? 'Timed out reaching Wave OS' : ((e && e.message) || String(e));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { ok: false, error: lastError };
+}
+
+module.exports = {
+  generateCode, callHarborPair, callHarborDeviceSync, localPlatform, localDeviceName,
+};

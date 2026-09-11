@@ -1,4 +1,4 @@
-const { ipcMain, app } = require('electron');
+const { ipcMain, app, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -22,7 +22,8 @@ function getSettingsData() {
         agentId: data.agentId || null,
         deviceId: data.deviceId || null,
         deviceToken: data.deviceToken || null,
-        pairedAt: data.pairedAt || null
+        pairedAt: data.pairedAt || null,
+        sharedFolders: Array.isArray(data.sharedFolders) ? data.sharedFolders : []
       };
     }
   } catch (e) {
@@ -30,7 +31,8 @@ function getSettingsData() {
   }
   return {
     aiMode: 'auto', chatCollapsed: false, conversations: [],
-    agentId: null, deviceId: null, deviceToken: null, pairedAt: null
+    agentId: null, deviceId: null, deviceToken: null, pairedAt: null,
+    sharedFolders: []
   };
 }
 
@@ -126,6 +128,7 @@ function registerIpcHandlers({
         deviceToken: res.data.device_token,
         pairedAt: new Date().toISOString(),
       });
+      startHeartbeat();
       return { ok: true, status: 'claimed', deviceId: res.data.device_id };
     }
     return { ok: true, status: status || 'pending' };
@@ -134,8 +137,83 @@ function registerIpcHandlers({
   ipcMain.handle('pairing:unpair', async () => {
     // Clears the local credential only. The HarborDevice row stays in Wave OS -
     // removing it is the owner's call from the device list, not the agent's.
+    await sendHeartbeat(false); // tell Wave OS before the token is discarded
+    stopHeartbeat();
     saveSettingsData({ deviceId: null, deviceToken: null, pairedAt: null });
     return { ok: true };
+  });
+
+  // --- Heartbeat ---------------------------------------------------------
+  // Wave OS reads a STORED is_online boolean, so a paired PC reads "offline"
+  // until the agent asserts otherwise on a timer. 30s cadence.
+  // Known weakness of the stored model: a crash or kill leaves the row reading
+  // online forever, because the final offline sync below is best-effort. The
+  // durable fix is for Wave OS to DERIVE online from last_seen; until it does,
+  // this is the honest best a client can manage.
+  let heartbeatTimer = null;
+
+  async function sendHeartbeat(online) {
+    const st = getSettingsData();
+    if (!st.deviceToken) return { ok: false, error: 'Not paired' };
+    return await pairing.callHarborDeviceSync({
+      device_token: st.deviceToken,
+      is_online: online !== false,
+      shared_folders: Array.isArray(st.sharedFolders) ? st.sharedFolders : [],
+    });
+  }
+
+  function startHeartbeat() {
+    if (heartbeatTimer) return;
+    sendHeartbeat(true);
+    heartbeatTimer = setInterval(() => sendHeartbeat(true), 30000);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+  }
+
+  if (getSettingsData().deviceToken) startHeartbeat();
+
+  app.on('before-quit', () => {
+    stopHeartbeat();
+    sendHeartbeat(false); // best-effort; see the note above
+  });
+
+  ipcMain.handle('pairing:heartbeatNow', async () => await sendHeartbeat(true));
+
+  ipcMain.handle('pairing:listFolders', async () => {
+    const st = getSettingsData();
+    return Array.isArray(st.sharedFolders) ? st.sharedFolders : [];
+  });
+
+  ipcMain.handle('pairing:addFolder', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Share a folder with Wave OS',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths.length) {
+      return { ok: false, canceled: true };
+    }
+    const st = getSettingsData();
+    const folders = Array.isArray(st.sharedFolders) ? st.sharedFolders.slice() : [];
+    for (const dir of result.filePaths) {
+      if (folders.some(f => f.path === dir)) continue;
+      // read-only, matching the per-folder permission model already present on
+      // Wave OS's device rows. Harbor must never widen this to whole-disk.
+      folders.push({ path: dir, name: path.basename(dir) || dir, permissions: 'read-only' });
+    }
+    saveSettingsData({ sharedFolders: folders });
+    const sync = await sendHeartbeat(true);
+    return { ok: true, folders, synced: !!(sync && sync.ok) };
+  });
+
+  ipcMain.handle('pairing:removeFolder', async (event, dirPath) => {
+    const st = getSettingsData();
+    const folders = (Array.isArray(st.sharedFolders) ? st.sharedFolders : [])
+      .filter(f => f.path !== dirPath);
+    saveSettingsData({ sharedFolders: folders });
+    await sendHeartbeat(true);
+    return { ok: true, folders };
   });
 
   // --- Settings & Conversation Handlers ---

@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startPairing: () => ipcRenderer.invoke('pairing:start'),
   pollPairing: (code) => ipcRenderer.invoke('pairing:poll', code),
   unpair: () => ipcRenderer.invoke('pairing:unpair'),
+  heartbeatNow: () => ipcRenderer.invoke('pairing:heartbeatNow'),
+  listSharedFolders: () => ipcRenderer.invoke('pairing:listFolders'),
+  addSharedFolder: () => ipcRenderer.invoke('pairing:addFolder'),
+  removeSharedFolder: (p) => ipcRenderer.invoke('pairing:removeFolder', p),
 
   // Settings & Conversations
   getSettings: () => ipcRenderer.invoke('settings:get'),
