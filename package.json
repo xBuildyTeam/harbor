@@ -1,6 +1,6 @@
 {
   "name": "harbor",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "description": "Harbor \u2014 secure local file access and local AI for Wave OS",
   "main": "electron/main.js",
   "scripts": {
@@ -14,14 +14,14 @@
     "productName": "Harbor",
     "win": {
       "target": [
-        "nsis",
-        "msi"
+        "nsis"
       ],
       "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
     }
   },
   "devDependencies": {
