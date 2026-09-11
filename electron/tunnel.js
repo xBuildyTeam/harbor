@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 let tunnelProcess = null;
 let tunnelUrl = null;
@@ -6,7 +6,37 @@ let tunnelUrl = null;
 /**
  * Start Cloudflare quick tunnel to expose Ollama on port 11434
  */
+/**
+ * Is the tunnel binary actually on PATH? Harbor has never shipped it, so on a
+ * fresh machine spawn() fails with ENOENT and the dock was showing a "Start
+ * Tunnel" button for something that could not possibly work. Check first so the
+ * UI can say "Not installed" instead of surfacing an error after the fact.
+ */
+function isTunnelBinaryAvailable() {
+  return new Promise((resolve) => {
+    const probe = process.platform === 'win32' ? 'where' : 'which';
+    try {
+      execFile(probe, ['cloudflared'], (err, stdout) => {
+        resolve(!err && !!String(stdout || '').trim());
+      });
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
 function startTunnel() {
+  return isTunnelBinaryAvailable().then((available) => {
+    if (!available) {
+      const e = new Error('Tunnel binary is not installed or not on PATH.');
+      e.code = 'TUNNEL_BINARY_MISSING';
+      throw e;
+    }
+    return startTunnelInner();
+  });
+}
+
+function startTunnelInner() {
   return new Promise((resolve, reject) => {
     if (tunnelProcess) {
       if (tunnelUrl) {
@@ -123,6 +153,7 @@ function isTunnelRunning() {
 }
 
 module.exports = {
+  isTunnelBinaryAvailable,
   startTunnel,
   stopTunnel,
   getTunnelUrl,

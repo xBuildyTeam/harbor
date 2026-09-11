@@ -222,7 +222,11 @@ document.addEventListener('DOMContentLoaded', () => {
           showToast('Tunnel generated successfully!', 'success');
         }
       } catch (err) {
-        showToast('cloudflared binary not found in PATH or tunnel failed.', 'error');
+        if (err && String(err.message || err).includes('TUNNEL_BINARY_MISSING')) {
+          showToast('Tunnel binary is not installed. This is an optional developer feature.', 'error');
+        } else {
+          showToast('Tunnel failed to start.', 'error');
+        }
       }
     }
     // Refresh state immediately
@@ -304,19 +308,17 @@ document.addEventListener('DOMContentLoaded', () => {
         dotTheta.className = 'status-dot offline';
         labelThetaStatus.textContent = 'No Token';
         labelThetaStatus.style.color = 'var(--red)';
+        if (thetaTokenRow) thetaTokenRow.style.display = 'flex';
+        if (thetaProbeRow) thetaProbeRow.style.display = 'none';
         return;
       }
-      // Token exists — do a health check
-      const result = await window.electronAPI.checkTheta();
-      if (result && result.connected) {
-        dotTheta.className = 'status-dot online';
-        labelThetaStatus.textContent = 'Connected';
-        labelThetaStatus.style.color = 'var(--green)';
-      } else {
-        dotTheta.className = 'status-dot offline';
-        labelThetaStatus.textContent = 'Unreachable';
-        labelThetaStatus.style.color = 'var(--amber)';
-      }
+      // Token exists. Deliberately NO network call here: this used to fire a real
+      // inference request, on a 15s timer, purely to colour this dot.
+      dotTheta.className = 'status-dot online';
+      labelThetaStatus.textContent = tokenStatus.source === 'env' ? 'Token set (env)' : 'Token set';
+      labelThetaStatus.style.color = 'var(--green)';
+      if (thetaTokenRow) thetaTokenRow.style.display = 'none';
+      if (thetaProbeRow) thetaProbeRow.style.display = 'flex';
     } catch (e) {
       dotTheta.className = 'status-dot offline';
       labelThetaStatus.textContent = 'Error';
@@ -347,6 +349,49 @@ document.addEventListener('DOMContentLoaded', () => {
   checkOllamaStatus();
   checkTunnelStatus();
   checkWaveOSConnection();
+  const thetaTokenRow = document.getElementById('theta-token-row');
+  const thetaProbeRow = document.getElementById('theta-probe-row');
+  const inputThetaToken = document.getElementById('input-theta-token');
+  const btnSaveThetaToken = document.getElementById('btn-save-theta-token');
+  const btnProbeTheta = document.getElementById('btn-probe-theta');
+
+  if (btnSaveThetaToken) {
+    btnSaveThetaToken.addEventListener('click', async () => {
+      const v = inputThetaToken ? inputThetaToken.value : '';
+      if (!v || !v.trim()) { showToast('Paste a token first.', 'error'); return; }
+      await window.electronAPI.setThetaToken(v);
+      if (inputThetaToken) inputThetaToken.value = '';
+      showToast('Theta token saved.', 'success');
+      await checkThetaStatus();
+    });
+  }
+
+  // The ONLY place a real Theta request is made for status purposes.
+  if (btnProbeTheta) {
+    btnProbeTheta.addEventListener('click', async () => {
+      btnProbeTheta.textContent = 'Testing...';
+      try {
+        const r = await window.electronAPI.probeTheta();
+        showToast(r && r.connected ? 'Theta reachable.' : 'Theta unreachable: ' + ((r && (r.reason || r.status)) || 'unknown'), r && r.connected ? 'success' : 'error');
+      } catch (e) {
+        showToast('Theta test failed.', 'error');
+      }
+      btnProbeTheta.textContent = 'Test connection';
+    });
+  }
+
+  // Hide the tunnel card entirely when the binary is absent - it is an optional
+  // developer feature and a Start button that cannot work is worse than nothing.
+  (async () => {
+    try {
+      const available = await window.electronAPI.isTunnelAvailable();
+      if (!available) {
+        const card = document.getElementById('tunnel-status-card');
+        if (card) card.style.display = 'none';
+      }
+    } catch (e) { /* leave the card as-is */ }
+  })();
+
   checkThetaStatus();
   loadAiMode();
 
@@ -354,5 +399,4 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(checkOllamaStatus, 3000); // Poll Ollama every 3s
   setInterval(checkTunnelStatus, 5000); // Poll Tunnel URL every 5s
   setInterval(checkWaveOSConnection, 10000); // Ping Wave OS every 10s
-  setInterval(checkThetaStatus, 15000); // Poll Theta every 15s
 });

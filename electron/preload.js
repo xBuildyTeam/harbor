@@ -4,6 +4,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Theta management
   checkTheta: () => ipcRenderer.invoke('theta:check'),
   getThetaTokenStatus: () => ipcRenderer.invoke('theta:getTokenStatus'),
+  probeTheta: () => ipcRenderer.invoke('theta:probe'),
+  setThetaToken: (v) => ipcRenderer.invoke('theta:setToken', v),
+  isTunnelAvailable: () => ipcRenderer.invoke('tunnel:isAvailable'),
 
   // Settings & Conversations
   getSettings: () => ipcRenderer.invoke('settings:get'),

@@ -69,13 +69,52 @@ function registerIpcHandlers({
   resizeBrowserView
 }) {
   // --- Theta Handlers ---
+  // Token resolution order: environment variable first (that is how this machine
+  // is configured), then the settings file. Requiring every end user to set a
+  // Windows environment variable is not viable onboarding - no school is doing
+  // that on thirty machines - so the settings file is the shippable path.
+  function resolveThetaToken() {
+    const fromEnv = process.env.THETA_API_TOKEN_2;
+    if (fromEnv && String(fromEnv).trim()) {
+      return { token: String(fromEnv).trim(), source: 'env' };
+    }
+    const st = getSettingsData();
+    const fromSettings = st && st.thetaApiToken;
+    if (fromSettings && String(fromSettings).trim()) {
+      return { token: String(fromSettings).trim(), source: 'settings' };
+    }
+    return { token: null, source: null };
+  }
+
   ipcMain.handle('theta:check', async () => {
-    const token = process.env.THETA_API_TOKEN_2;
+    const { token } = resolveThetaToken();
     return await theta.checkTheta(token);
   });
 
+  // Opt-in, user-initiated. Costs one inference call - never call from a timer.
+  ipcMain.handle('theta:probe', async () => {
+    const { token } = resolveThetaToken();
+    return await theta.probeTheta(token);
+  });
+
   ipcMain.handle('theta:getTokenStatus', async () => {
-    return { hasToken: !!process.env.THETA_API_TOKEN_2 };
+    const { token, source } = resolveThetaToken();
+    return { hasToken: !!token, source };
+  });
+
+  ipcMain.handle('theta:setToken', async (event, value) => {
+    const clean = typeof value === 'string' ? value.trim() : '';
+    saveSettingsData({ thetaApiToken: clean });
+    const { token, source } = resolveThetaToken();
+    return { hasToken: !!token, source };
+  });
+
+  ipcMain.handle('tunnel:isAvailable', async () => {
+    try {
+      return await tunnel.isTunnelBinaryAvailable();
+    } catch (e) {
+      return false;
+    }
   });
 
   // --- Settings & Conversation Handlers ---

@@ -93,6 +93,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Top-bar sidebar toggle. The floating #btn-show-sidebar cannot be reached when
+  // the sidebar is collapsed (native BrowserView composites above page DOM and
+  // covers the full width at x:0), which left users with no way to reopen the
+  // Co-Pilot panel. This one lives in the top bar strip and is always clickable.
+  const btnTopbarSidebar = document.getElementById('btn-topbar-sidebar');
+  if (btnTopbarSidebar) {
+    btnTopbarSidebar.addEventListener('click', async () => {
+      const isCollapsed = !document.body.classList.contains('sidebar-collapsed');
+      setSidebarCollapsedState(isCollapsed);
+      await window.electronAPI.setSettings({ chatCollapsed: isCollapsed });
+      await window.electronAPI.resizeWebview(isCollapsed);
+    });
+  }
+
   if (btnShowSidebar) {
     btnShowSidebar.addEventListener('click', async () => {
       setSidebarCollapsedState(false);
