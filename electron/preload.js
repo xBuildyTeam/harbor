@@ -2,10 +2,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // Theta management
-  checkTheta: () => ipcRenderer.invoke('theta:check'),
-  getThetaTokenStatus: () => ipcRenderer.invoke('theta:getTokenStatus'),
-  probeTheta: () => ipcRenderer.invoke('theta:probe'),
-  setThetaToken: (v) => ipcRenderer.invoke('theta:setToken', v),
   isTunnelAvailable: () => ipcRenderer.invoke('tunnel:isAvailable'),
 
   // Settings & Conversations
@@ -85,7 +81,6 @@ const harborBridgeAI = {
   ollamaHealth: ()                    => ipcRenderer.invoke('ollama:check'),
   pullModel:    (model)               => ipcRenderer.invoke('ollama:pullModel', model),
   // Theta EdgeCloud
-  thetaChat:    (messages, options)   => ipcRenderer.invoke('ai:theta-chat', messages, options),
   // Smart AI routing (auto/local/theta)
   aiChat:       (messages, options)   => ipcRenderer.invoke('ai:chat', messages, options),
   // Conversation persistence

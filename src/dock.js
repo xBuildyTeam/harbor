@@ -278,8 +278,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Theta EdgeCloud AI Status ---
 
-  const dotTheta = document.getElementById('dot-theta');
-  const labelThetaStatus = document.getElementById('label-theta-status');
   const lblAiMode = document.getElementById('lbl-ai-mode');
   const modeButtons = document.querySelectorAll('.mode-btn');
   let currentAiMode = 'auto';
@@ -300,31 +298,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Check Theta EdgeCloud connectivity
-  async function checkThetaStatus() {
-    try {
-      const tokenStatus = await window.electronAPI.getThetaTokenStatus();
-      if (!tokenStatus.hasToken) {
-        dotTheta.className = 'status-dot offline';
-        labelThetaStatus.textContent = 'No Token';
-        labelThetaStatus.style.color = 'var(--red)';
-        if (thetaTokenRow) thetaTokenRow.style.display = 'flex';
-        if (thetaProbeRow) thetaProbeRow.style.display = 'none';
-        return;
-      }
-      // Token exists. Deliberately NO network call here: this used to fire a real
-      // inference request, on a 15s timer, purely to colour this dot.
-      dotTheta.className = 'status-dot online';
-      labelThetaStatus.textContent = tokenStatus.source === 'env' ? 'Token set (env)' : 'Token set';
-      labelThetaStatus.style.color = 'var(--green)';
-      if (thetaTokenRow) thetaTokenRow.style.display = 'none';
-      if (thetaProbeRow) thetaProbeRow.style.display = 'flex';
-    } catch (e) {
-      dotTheta.className = 'status-dot offline';
-      labelThetaStatus.textContent = 'Error';
-      labelThetaStatus.style.color = 'var(--red)';
-    }
-  }
 
   // AI Mode selector button handlers
   modeButtons.forEach(btn => {
@@ -349,50 +322,6 @@ document.addEventListener('DOMContentLoaded', () => {
   checkOllamaStatus();
   checkTunnelStatus();
   checkWaveOSConnection();
-  const thetaTokenRow = document.getElementById('theta-token-row');
-  const thetaProbeRow = document.getElementById('theta-probe-row');
-  const inputThetaToken = document.getElementById('input-theta-token');
-  const btnSaveThetaToken = document.getElementById('btn-save-theta-token');
-  const btnProbeTheta = document.getElementById('btn-probe-theta');
-
-  if (btnSaveThetaToken) {
-    btnSaveThetaToken.addEventListener('click', async () => {
-      const v = inputThetaToken ? inputThetaToken.value : '';
-      if (!v || !v.trim()) { showToast('Paste a token first.', 'error'); return; }
-      await window.electronAPI.setThetaToken(v);
-      if (inputThetaToken) inputThetaToken.value = '';
-      showToast('Theta token saved.', 'success');
-      await checkThetaStatus();
-    });
-  }
-
-  // The ONLY place a real Theta request is made for status purposes.
-  if (btnProbeTheta) {
-    btnProbeTheta.addEventListener('click', async () => {
-      btnProbeTheta.textContent = 'Testing...';
-      try {
-        const r = await window.electronAPI.probeTheta();
-        showToast(r && r.connected ? 'Theta reachable.' : 'Theta unreachable: ' + ((r && (r.reason || r.status)) || 'unknown'), r && r.connected ? 'success' : 'error');
-      } catch (e) {
-        showToast('Theta test failed.', 'error');
-      }
-      btnProbeTheta.textContent = 'Test connection';
-    });
-  }
-
-  // Hide the tunnel card entirely when the binary is absent - it is an optional
-  // developer feature and a Start button that cannot work is worse than nothing.
-  (async () => {
-    try {
-      const available = await window.electronAPI.isTunnelAvailable();
-      if (!available) {
-        const card = document.getElementById('tunnel-status-card');
-        if (card) card.style.display = 'none';
-      }
-    } catch (e) { /* leave the card as-is */ }
-  })();
-
-  checkThetaStatus();
   loadAiMode();
 
   // Intervals

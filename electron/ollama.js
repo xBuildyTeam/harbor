@@ -1,4 +1,3 @@
-const { chatWithTheta } = require('./theta');
 const { spawn, exec } = require('child_process');
 const http = require('http');
 
@@ -168,13 +167,17 @@ function pullModel(name) {
  * Send chat completions query
  */
 async function chat(model, messages, options = {}) {
-  const { aiMode = 'auto', thetaToken } = options;
+  const { aiMode = 'auto' } = options;
   
   // Theta-only mode
-  if (aiMode === 'theta' && thetaToken) {
-    console.log('[ollama.js] Theta-only mode, calling Theta EdgeCloud');
-    const result = await chatWithTheta(messages, thetaToken);
-    return result;
+  // Theta-only and Theta-fallback branches removed in v3.0.3. Cloud inference is
+  // Wave OS's job - it owns Theta key management and model routing already.
+  if (aiMode === 'theta') {
+    return {
+      error: true,
+      provider: 'none',
+      content: 'Harbor runs local models only. Use the Wave Assistant in Wave OS for Theta models.'
+    };
   }
   
   // Local-only mode or auto mode (try Ollama first)
@@ -202,11 +205,6 @@ async function chat(model, messages, options = {}) {
   }
   
   // Theta fallback (auto mode)
-  if (aiMode === 'auto' && thetaToken) {
-    console.log('[ollama.js] Falling back to Theta EdgeCloud');
-    const result = await chatWithTheta(messages, thetaToken);
-    return result;
-  }
   
   throw new Error('No AI provider available');
 }

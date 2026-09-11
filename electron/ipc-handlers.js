@@ -4,7 +4,6 @@ const fs = require('fs');
 
 const ollama = require('./ollama');
 const tunnel = require('./tunnel');
-const theta = require('./theta');
 
 const settingsPath = path.join(app.getPath('userData'), 'wave-dock-settings.json');
 
@@ -68,55 +67,6 @@ function registerIpcHandlers({
   onToggleSidebar,
   resizeBrowserView
 }) {
-  // --- Theta Handlers ---
-  // Token resolution order: environment variable first (that is how this machine
-  // is configured), then the settings file. Requiring every end user to set a
-  // Windows environment variable is not viable onboarding - no school is doing
-  // that on thirty machines - so the settings file is the shippable path.
-  function resolveThetaToken() {
-    const fromEnv = process.env.THETA_API_TOKEN_2;
-    if (fromEnv && String(fromEnv).trim()) {
-      return { token: String(fromEnv).trim(), source: 'env' };
-    }
-    const st = getSettingsData();
-    const fromSettings = st && st.thetaApiToken;
-    if (fromSettings && String(fromSettings).trim()) {
-      return { token: String(fromSettings).trim(), source: 'settings' };
-    }
-    return { token: null, source: null };
-  }
-
-  ipcMain.handle('theta:check', async () => {
-    const { token } = resolveThetaToken();
-    return await theta.checkTheta(token);
-  });
-
-  // Opt-in, user-initiated. Costs one inference call - never call from a timer.
-  ipcMain.handle('theta:probe', async () => {
-    const { token } = resolveThetaToken();
-    return await theta.probeTheta(token);
-  });
-
-  ipcMain.handle('theta:getTokenStatus', async () => {
-    const { token, source } = resolveThetaToken();
-    return { hasToken: !!token, source };
-  });
-
-  ipcMain.handle('theta:setToken', async (event, value) => {
-    const clean = typeof value === 'string' ? value.trim() : '';
-    saveSettingsData({ thetaApiToken: clean });
-    const { token, source } = resolveThetaToken();
-    return { hasToken: !!token, source };
-  });
-
-  ipcMain.handle('tunnel:isAvailable', async () => {
-    try {
-      return await tunnel.isTunnelBinaryAvailable();
-    } catch (e) {
-      return false;
-    }
-  });
-
   // --- Settings & Conversation Handlers ---
   ipcMain.handle('settings:get', async () => {
     return getSettingsData();
@@ -207,10 +157,9 @@ function registerIpcHandlers({
   });
 
   ipcMain.handle('ollama:chat', async (event, model, messages, options = {}) => {
-    const thetaToken = process.env.THETA_API_TOKEN_2;
     const settings = getSettingsData();
     const aiMode = options.aiMode || settings.aiMode || 'auto';
-    const chatOptions = { ...options, aiMode, thetaToken };
+    const chatOptions = { ...options, aiMode };
     return await ollama.chat(model, messages, chatOptions);
   });
 
@@ -219,7 +168,6 @@ function registerIpcHandlers({
   ipcMain.handle('localllm:getInfo', async () => {
     const ollamaStatus = await ollama.checkOllama();
     const tunnelUrl = tunnel.getTunnelUrl();
-    const thetaToken = process.env.THETA_API_TOKEN_2;
     return {
       ollama: {
         running: ollamaStatus.running,
@@ -232,10 +180,6 @@ function registerIpcHandlers({
         // The Wave OS-compatible endpoint (OpenAI-compatible)
         llmEndpoint: tunnelUrl ? `${tunnelUrl}/v1` : null
       },
-      theta: {
-        hasToken: !!thetaToken,
-        endpoint: 'https://ai.thetaedgecloud.com'
-      }
     };
   });
 
@@ -380,32 +324,32 @@ function registerFsHandlers(ipcMain, app, shell) {
 }
 
 // AI ROUTING HANDLERS (v3 — waveDockAI)
-function registerAiHandlers(ipcMain, theta) {
-  ipcMain.handle('ai:theta-chat', async (event, messages, options = {}) => {
-    return await theta.thetaChat(messages, options);
-  });
-
+function registerAiHandlers(ipcMain) {
+  // Harbor is LOCAL-ONLY by design. Cloud inference belongs to Wave OS, which
+  // already owns Theta key management and model routing - a second router here
+  // competed with it. Note this particular handler's Theta branch was ALSO dead:
+  // it called theta.thetaChat(), which the module never exported, so 'auto' threw
+  // instead of degrading whenever Ollama was stopped. The working Theta path was
+  // the separate one in ollama.js; both are gone. Local failure now returns a
+  // clear result object rather than throwing.
   ipcMain.handle('ai:chat', async (event, messages, options = {}) => {
     const ollama = require('./ollama');
-    const mode = options.mode || 'auto';
-    if (mode === 'theta') return await theta.thetaChat(messages, options);
-    if (mode === 'local') {
-      const result = await ollama.chat(options.model || 'phi4-mini', messages);
-      return { ...result, provider: 'ollama' };
-    }
-    // auto: try ollama first, fallback to theta
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
       const result = await ollama.chat(options.model || 'phi4-mini', messages, controller.signal);
-      clearTimeout(timeout);
       return { ...result, provider: 'ollama' };
     } catch (e) {
-      console.log('[wave-dock] Ollama failed, falling back to Theta:', e.message);
-      const result = await theta.thetaChat(messages, options);
-      return { ...result, provider: 'theta', fallback: true };
+      return {
+        error: true,
+        provider: 'ollama',
+        content: 'Local AI is not running. Start Ollama from the Harbor dock, or ask the Wave Assistant in Wave OS for cloud models.',
+        reason: e && e.message ? e.message : String(e)
+      };
+    } finally {
+      clearTimeout(timeout);
     }
-  });
+  })
 }
 
 // Self-registering: call at bottom of registerIpcHandlers or export for main.js

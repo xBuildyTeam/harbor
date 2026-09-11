@@ -6,7 +6,6 @@ const { registerIpcHandlers, registerFsHandlers, registerAiHandlers } = require(
 const { createTray } = require('./tray');
 const ollama = require('./ollama');
 const tunnel = require('./tunnel');
-const theta = require('./theta');
 
 let dockWindow = null;
 let fullWindow = null;
@@ -378,7 +377,7 @@ app.whenReady().then(() => {
   registerFsHandlers(ipcMain, app, shell);
 
   // Register AI routing handlers (waveDockAI)
-  registerAiHandlers(ipcMain, theta);
+  registerAiHandlers(ipcMain);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
