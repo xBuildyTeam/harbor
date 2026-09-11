@@ -4,6 +4,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Theta management
   isTunnelAvailable: () => ipcRenderer.invoke('tunnel:isAvailable'),
 
+  // Pairing with Wave OS
+  getPairingStatus: () => ipcRenderer.invoke('pairing:getStatus'),
+  startPairing: () => ipcRenderer.invoke('pairing:start'),
+  pollPairing: (code) => ipcRenderer.invoke('pairing:poll', code),
+  unpair: () => ipcRenderer.invoke('pairing:unpair'),
+
   // Settings & Conversations
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (settings) => ipcRenderer.invoke('settings:set', settings),

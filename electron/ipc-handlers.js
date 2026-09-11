@@ -1,6 +1,7 @@
 const { ipcMain, app } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const ollama = require('./ollama');
 const tunnel = require('./tunnel');
@@ -14,13 +15,23 @@ function getSettingsData() {
       return {
         aiMode: data.aiMode || 'auto',
         chatCollapsed: !!data.chatCollapsed,
-        conversations: Array.isArray(data.conversations) ? data.conversations : []
+        conversations: Array.isArray(data.conversations) ? data.conversations : [],
+        // Pairing state. NOTE: this function is a WHITELIST - saveSettingsData
+        // merges over its result, so any key missing here is silently dropped on
+        // the next write. Adding a persisted field means adding it in both places.
+        agentId: data.agentId || null,
+        deviceId: data.deviceId || null,
+        deviceToken: data.deviceToken || null,
+        pairedAt: data.pairedAt || null
       };
     }
   } catch (e) {
     console.error('Failed to read settings:', e);
   }
-  return { aiMode: 'auto', chatCollapsed: false, conversations: [] };
+  return {
+    aiMode: 'auto', chatCollapsed: false, conversations: [],
+    agentId: null, deviceId: null, deviceToken: null, pairedAt: null
+  };
 }
 
 function saveSettingsData(newSettings) {
@@ -67,6 +78,66 @@ function registerIpcHandlers({
   onToggleSidebar,
   resizeBrowserView
 }) {
+  // --- Pairing Handlers (Harbor's half of the device-code handshake) ---
+  const pairing = require('./pairing');
+
+  function ensureAgentId() {
+    const st = getSettingsData();
+    if (st.agentId) return st.agentId;
+    const id = crypto.randomUUID();
+    saveSettingsData({ agentId: id });
+    return id;
+  }
+
+  ipcMain.handle('pairing:getStatus', async () => {
+    const st = getSettingsData();
+    return {
+      paired: !!st.deviceToken,
+      deviceId: st.deviceId,
+      pairedAt: st.pairedAt,
+      deviceName: pairing.localDeviceName(),
+      platform: pairing.localPlatform(),
+    };
+  });
+
+  ipcMain.handle('pairing:start', async () => {
+    const code = pairing.generateCode();
+    const res = await pairing.callHarborPair('register-code', {
+      code,
+      agent_id: ensureAgentId(),
+      device_name: pairing.localDeviceName(),
+      platform: pairing.localPlatform(),
+    });
+    if (!res.ok) return { ok: false, error: res.error };
+    // The countdown is driven by the SERVER's expires_at, never a local timer -
+    // a locally invented countdown is a number the UI cannot actually know.
+    return { ok: true, code, expiresAt: res.data.expires_at };
+  });
+
+  ipcMain.handle('pairing:poll', async (event, code) => {
+    const st = getSettingsData();
+    if (!st.agentId) return { ok: false, error: 'No agent id' };
+    const res = await pairing.callHarborPair('poll-code', { code, agent_id: st.agentId });
+    if (!res.ok) return { ok: false, error: res.error };
+    const status = res.data.status;
+    if (status === 'claimed' && res.data.device_token) {
+      saveSettingsData({
+        deviceId: res.data.device_id,
+        deviceToken: res.data.device_token,
+        pairedAt: new Date().toISOString(),
+      });
+      return { ok: true, status: 'claimed', deviceId: res.data.device_id };
+    }
+    return { ok: true, status: status || 'pending' };
+  });
+
+  ipcMain.handle('pairing:unpair', async () => {
+    // Clears the local credential only. The HarborDevice row stays in Wave OS -
+    // removing it is the owner's call from the device list, not the agent's.
+    saveSettingsData({ deviceId: null, deviceToken: null, pairedAt: null });
+    return { ok: true };
+  });
+
   // --- Settings & Conversation Handlers ---
   ipcMain.handle('settings:get', async () => {
     return getSettingsData();

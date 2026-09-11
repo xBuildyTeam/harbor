@@ -95,6 +95,26 @@
            The removed card also stored a raw token in plaintext settings, next
            to a Wave OS key system that already does health checks and rotation. -->
 
+      <!-- Card 4: Pairing with Wave OS -->
+      <section id="pairing-card" class="status-card">
+        <div class="card-header">
+          <div class="card-info">
+            <div id="dot-pairing" class="status-dot offline"></div>
+            <span class="card-title">Wave OS Pairing</span>
+          </div>
+          <button id="btn-pair" class="card-btn">Pair Device</button>
+        </div>
+        <div class="card-body">
+          <span class="card-subtitle">Status</span>
+          <span id="pairing-status-text">Not paired</span>
+        </div>
+        <div id="pairing-code-row" class="card-body" style="display:none; flex-direction:column; align-items:flex-start; gap:6px;">
+          <span class="card-subtitle">Enter this code in Wave OS</span>
+          <span id="pairing-code" style="font-size:26px; font-weight:700; letter-spacing:5px; font-family:monospace;"></span>
+          <span id="pairing-countdown" class="card-subtitle"></span>
+        </div>
+      </section>
+
       <!-- Card 5: Quick Actions Row -->
       <section class="quick-actions-row">
         <button id="btn-chat" class="quick-btn">

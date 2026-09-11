@@ -329,3 +329,128 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(checkTunnelStatus, 5000); // Poll Tunnel URL every 5s
   setInterval(checkWaveOSConnection, 10000); // Ping Wave OS every 10s
 });
+
+// ---------------------------------------------------------------------------
+// Wave OS pairing (v3.1.0). Harbor's half of the device-code handshake.
+// The PC generates and DISPLAYS the code so that entering it proves physical
+// presence at this machine; the browser, which is already signed in, claims it.
+// Self-contained and readyState-guarded so it does not depend on where in
+// dock.js this block lands.
+// ---------------------------------------------------------------------------
+(function initPairing() {
+  function start() {
+    const api = window.electronAPI;
+    const dot = document.getElementById('dot-pairing');
+    const statusText = document.getElementById('pairing-status-text');
+    const btn = document.getElementById('btn-pair');
+    const codeRow = document.getElementById('pairing-code-row');
+    const codeEl = document.getElementById('pairing-code');
+    const countdownEl = document.getElementById('pairing-countdown');
+    if (!api || !btn || !dot || !statusText) return;
+
+    let pollTimer = null;
+    let tickTimer = null;
+
+    function stopTimers() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+    }
+
+    function hideCode() {
+      stopTimers();
+      if (codeRow) codeRow.style.display = 'none';
+      if (countdownEl) countdownEl.textContent = '';
+    }
+
+    async function refresh() {
+      try {
+        const st = await api.getPairingStatus();
+        if (st && st.paired) {
+          dot.className = 'status-dot online';
+          statusText.textContent = `Paired as ${st.deviceName}`;
+          btn.textContent = 'Unpair';
+        } else {
+          dot.className = 'status-dot offline';
+          statusText.textContent = 'Not paired';
+          btn.textContent = 'Pair Device';
+        }
+      } catch (e) {
+        statusText.textContent = 'Status unavailable';
+      }
+    }
+
+    async function beginPairing() {
+      hideCode();
+      btn.disabled = true;
+      statusText.textContent = 'Requesting a code…';
+      let res;
+      try {
+        res = await api.startPairing();
+      } catch (e) {
+        res = { ok: false, error: (e && e.message) || String(e) };
+      }
+      btn.disabled = false;
+      if (!res || !res.ok) {
+        statusText.textContent = (res && res.error) || 'Could not reach Wave OS';
+        return;
+      }
+
+      const code = res.code;
+      if (codeEl) codeEl.textContent = code.slice(0, 3) + ' ' + code.slice(3);
+      if (codeRow) codeRow.style.display = 'flex';
+      statusText.textContent = 'Waiting for Wave OS…';
+
+      // Countdown comes from the server's expires_at. The browser-side modal used
+      // a local useState(60), which invents a number it cannot know - this reads
+      // the real deadline the backend is enforcing.
+      const deadline = new Date(res.expiresAt).getTime();
+      function tick() {
+        const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+        if (countdownEl) countdownEl.textContent = left > 0 ? `Expires in ${left}s` : 'Expired';
+        if (left <= 0) {
+          hideCode();
+          statusText.textContent = 'Code expired — try again';
+        }
+      }
+      tick();
+      tickTimer = setInterval(tick, 1000);
+
+      pollTimer = setInterval(async () => {
+        let p;
+        try {
+          p = await api.pollPairing(code);
+        } catch (e) {
+          return; // transient; the countdown still bounds this loop
+        }
+        if (!p || !p.ok) return;
+        if (p.status === 'claimed') {
+          hideCode();
+          statusText.textContent = 'Paired';
+          await refresh();
+        } else if (p.status === 'expired') {
+          hideCode();
+          statusText.textContent = 'Code expired — try again';
+        }
+      }, 2000);
+    }
+
+    btn.addEventListener('click', async () => {
+      const st = await api.getPairingStatus().catch(() => null);
+      if (st && st.paired) {
+        await api.unpair().catch(() => null);
+        hideCode();
+        await refresh();
+      } else {
+        await beginPairing();
+      }
+    });
+
+    refresh();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
