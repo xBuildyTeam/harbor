@@ -23,7 +23,8 @@ function getSettingsData() {
         deviceId: data.deviceId || null,
         deviceToken: data.deviceToken || null,
         pairedAt: data.pairedAt || null,
-        sharedFolders: Array.isArray(data.sharedFolders) ? data.sharedFolders : []
+        sharedFolders: Array.isArray(data.sharedFolders) ? data.sharedFolders : [],
+        relaySecret: data.relaySecret || null
       };
     }
   } catch (e) {
@@ -32,7 +33,7 @@ function getSettingsData() {
   return {
     aiMode: 'auto', chatCollapsed: false, conversations: [],
     agentId: null, deviceId: null, deviceToken: null, pairedAt: null,
-    sharedFolders: []
+    sharedFolders: [], relaySecret: null
   };
 }
 
@@ -127,6 +128,10 @@ function registerIpcHandlers({
       saveSettingsData({
         deviceId: res.data.device_id,
         deviceToken: res.data.device_token,
+        // Wave OS's relay presents THIS, not the device token. The device token
+        // proves Harbor to Wave OS; the relay secret proves Wave OS to Harbor.
+        // Opposite directions, so they cannot be the same value.
+        relaySecret: res.data.relay_secret || null,
         pairedAt: new Date().toISOString(),
       });
       startHeartbeat();
@@ -140,7 +145,7 @@ function registerIpcHandlers({
     // removing it is the owner's call from the device list, not the agent's.
     await sendHeartbeat(false); // tell Wave OS before the token is discarded
     stopHeartbeat();
-    saveSettingsData({ deviceId: null, deviceToken: null, pairedAt: null });
+    saveSettingsData({ deviceId: null, deviceToken: null, relaySecret: null, pairedAt: null });
     return { ok: true };
   });
 
@@ -170,6 +175,7 @@ function registerIpcHandlers({
     const st = getSettingsData();
     return {
       token: st.deviceToken,
+      relaySecret: st.relaySecret || null,
       folders: Array.isArray(st.sharedFolders) ? st.sharedFolders : [],
     };
   }

@@ -87,11 +87,23 @@ function handle(req, res) {
   }
   if (!cfg.token) return send(res, 503, { error: 'Not paired' });
 
+  // TWO valid credentials, because two different peers call this server and the
+  // credentials travel in opposite directions:
+  //   device_token  - what Harbor itself holds; Wave OS stores only its HASH, so
+  //                   the backend CANNOT present this one.
+  //   relay_secret  - what Wave OS's harborRelay presents; Wave OS stores it
+  //                   encrypted-at-rest precisely so it CAN present it.
+  // Accepting only the device token, as v3.2.0 did, 401s every relayed request.
   const presented = req.headers['x-harbor-token']
     || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  if (!presented || !timingSafeEqualStr(presented, cfg.token)) {
-    return send(res, 401, { error: 'Unauthorized' });
+  const accepted = [cfg.token, cfg.relaySecret].filter(Boolean);
+  // Compare against BOTH unconditionally rather than short-circuiting, so the
+  // number of comparisons does not vary with which credential was presented.
+  let authed = false;
+  for (const candidate of accepted) {
+    if (presented && timingSafeEqualStr(presented, candidate)) authed = true;
   }
+  if (!authed) return send(res, 401, { error: 'Unauthorized' });
 
   let url;
   try {
@@ -115,7 +127,19 @@ function handle(req, res) {
     });
   }
 
-  if (route === '/list') {
+  // Wave OS's relay advertises a 'drives' endpoint. Refused deliberately, and
+  // with an explicit reason rather than a bare 404, so nobody later reads the
+  // 404 as "not implemented yet" and helpfully implements it. Enumerating whole
+  // disks is exactly the whole-filesystem exposure the shared-folder model
+  // exists to replace.
+  if (route === '/drives') {
+    return send(res, 403, {
+      error: 'Whole-disk enumeration is not offered. Use /roots for the folders the user shared.',
+      refused_by_design: true,
+    });
+  }
+
+  if (route === '/list' || route === '/read-dir') {
     const dir = resolveShared(url.searchParams.get('path'), cfg.folders);
     if (!dir) return send(res, 403, { error: 'Path is not inside a shared folder' });
     let stat;
