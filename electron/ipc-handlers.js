@@ -24,7 +24,8 @@ function getSettingsData() {
         deviceToken: data.deviceToken || null,
         pairedAt: data.pairedAt || null,
         sharedFolders: Array.isArray(data.sharedFolders) ? data.sharedFolders : [],
-        relaySecret: data.relaySecret || null
+        relaySecret: data.relaySecret || null,
+        remoteAccessEnabled: data.remoteAccessEnabled === true
       };
     }
   } catch (e) {
@@ -33,7 +34,7 @@ function getSettingsData() {
   return {
     aiMode: 'auto', chatCollapsed: false, conversations: [],
     agentId: null, deviceId: null, deviceToken: null, pairedAt: null,
-    sharedFolders: [], relaySecret: null
+    sharedFolders: [], relaySecret: null, remoteAccessEnabled: false
   };
 }
 
@@ -84,6 +85,7 @@ function registerIpcHandlers({
   // --- Pairing Handlers (Harbor's half of the device-code handshake) ---
   const pairing = require('./pairing');
   const fileserver = require('./fileserver');
+  const filetunnel = require('./filetunnel');
 
   function ensureAgentId() {
     const st = getSettingsData();
@@ -161,10 +163,23 @@ function registerIpcHandlers({
   async function sendHeartbeat(online) {
     const st = getSettingsData();
     if (!st.deviceToken) return { ok: false, error: 'Not paired' };
+    // MEASURED 2026-09-11: Wave OS's shared_folders schema uses `label`, not
+    // `name`. Sending `name` was accepted with ok:true and stored as
+    // label: null - a silent drop, so folders arrived unnamed. Send both:
+    // `label` for Wave OS, `name` kept for Harbor's own UI.
+    const folders = (Array.isArray(st.sharedFolders) ? st.sharedFolders : []).map(f => ({
+      path: f.path,
+      label: f.label || f.name || f.path,
+      name: f.name || f.label || f.path,
+      permissions: f.permissions || 'read-only',
+    }));
     return await pairing.callHarborDeviceSync({
       device_token: st.deviceToken,
       is_online: online !== false,
-      shared_folders: Array.isArray(st.sharedFolders) ? st.sharedFolders : [],
+      shared_folders: folders,
+      // null when remote access is off, which is the honest value - the relay
+      // then reports the device unreachable instead of dialling a dead host.
+      tunnel_url: filetunnel.getUrl() || null,
     });
   }
 
@@ -192,6 +207,7 @@ function registerIpcHandlers({
   function stopHeartbeat() {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     fileserver.stopFileServer();
+    filetunnel.stopFileTunnel();
   }
 
   if (getSettingsData().deviceToken) startHeartbeat();
@@ -199,6 +215,35 @@ function registerIpcHandlers({
   app.on('before-quit', () => {
     stopHeartbeat();
     sendHeartbeat(false); // best-effort; see the note above
+  });
+
+  ipcMain.handle('remote:status', async () => {
+    const st = getSettingsData();
+    return {
+      enabled: st.remoteAccessEnabled === true,
+      url: filetunnel.getUrl(),
+      running: filetunnel.isRunning(),
+      paired: !!st.deviceToken,
+    };
+  });
+
+  ipcMain.handle('remote:setEnabled', async (event, enabled) => {
+    const want = enabled === true;
+    saveSettingsData({ remoteAccessEnabled: want });
+    if (!want) {
+      filetunnel.stopFileTunnel();
+      await sendHeartbeat(true); // republish immediately with tunnel_url: null
+      return { ok: true, enabled: false, url: null };
+    }
+    const srv = fileserver.fileServerStatus();
+    if (!srv.running) return { ok: false, error: 'File server is not running - pair the device first' };
+    const res = await filetunnel.startFileTunnel(srv.port);
+    if (!res.ok) {
+      saveSettingsData({ remoteAccessEnabled: false });
+      return { ok: false, error: res.error };
+    }
+    await sendHeartbeat(true); // publish the new hostname without waiting 30s
+    return { ok: true, enabled: true, url: res.url };
   });
 
   ipcMain.handle('fileserver:status', async () => {

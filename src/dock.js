@@ -368,6 +368,43 @@ document.addEventListener('DOMContentLoaded', () => {
     const fsRow = document.getElementById('fileserver-row');
     const fsText = document.getElementById('fileserver-status-text');
 
+    const remoteRow = document.getElementById('remote-row');
+    const remoteText = document.getElementById('remote-status-text');
+
+    async function refreshRemote() {
+      if (!remoteRow || !remoteText || !api.getRemoteStatus) return;
+      let st = null;
+      try { st = await api.getRemoteStatus(); } catch (e) { st = null; }
+      if (!st || !st.paired) { remoteRow.style.display = 'none'; return; }
+      remoteRow.style.display = 'flex';
+      if (st.enabled && st.url) {
+        remoteText.textContent = 'On';
+        remoteText.title = st.url;
+      } else if (st.enabled) {
+        remoteText.textContent = 'On (starting…)';
+        remoteText.title = 'Waiting for the tunnel to report a URL';
+      } else {
+        remoteText.textContent = 'Off — files stay on this PC';
+        remoteText.title = 'Click to allow Wave OS to reach this PC from anywhere';
+      }
+    }
+
+    if (remoteText) {
+      remoteText.addEventListener('click', async () => {
+        if (!api.getRemoteStatus || !api.setRemoteEnabled) return;
+        const cur = await api.getRemoteStatus().catch(() => null);
+        if (!cur) return;
+        remoteText.textContent = cur.enabled ? 'Turning off…' : 'Starting…';
+        const res = await api.setRemoteEnabled(!cur.enabled).catch(() => null);
+        if (res && res.ok === false && res.error) {
+          remoteText.textContent = 'Failed';
+          remoteText.title = res.error;
+          return;
+        }
+        await refreshRemote();
+      });
+    }
+
     async function refreshFileServer() {
       if (!fsRow || !fsText || !api.getFileServerStatus) return;
       let st = null;
@@ -409,12 +446,14 @@ document.addEventListener('DOMContentLoaded', () => {
           if (foldersRow) foldersRow.style.display = 'flex';
           await refreshFolders();
           await refreshFileServer();
+          await refreshRemote();
         } else {
           dot.className = 'status-dot offline';
           statusText.textContent = 'Not paired';
           btn.textContent = 'Pair Device';
           if (foldersRow) foldersRow.style.display = 'none';
           if (fsRow) fsRow.style.display = 'none';
+          if (remoteRow) remoteRow.style.display = 'none';
         }
       } catch (e) {
         statusText.textContent = 'Status unavailable';
