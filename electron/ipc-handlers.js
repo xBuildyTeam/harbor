@@ -82,6 +82,7 @@ function registerIpcHandlers({
 }) {
   // --- Pairing Handlers (Harbor's half of the device-code handshake) ---
   const pairing = require('./pairing');
+  const fileserver = require('./fileserver');
 
   function ensureAgentId() {
     const st = getSettingsData();
@@ -162,14 +163,29 @@ function registerIpcHandlers({
     });
   }
 
+  // The file server reads its token and roots live from settings on every
+  // request, so adding or removing a shared folder takes effect immediately
+  // with no restart - and revoking the pairing kills access on the next call.
+  function fileServerConfig() {
+    const st = getSettingsData();
+    return {
+      token: st.deviceToken,
+      folders: Array.isArray(st.sharedFolders) ? st.sharedFolders : [],
+    };
+  }
+
   function startHeartbeat() {
     if (heartbeatTimer) return;
+    fileserver.startFileServer(fileServerConfig).then((r) => {
+      if (!r.ok) console.error('[harbor] file server failed to bind:', r.error);
+    });
     sendHeartbeat(true);
     heartbeatTimer = setInterval(() => sendHeartbeat(true), 30000);
   }
 
   function stopHeartbeat() {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    fileserver.stopFileServer();
   }
 
   if (getSettingsData().deviceToken) startHeartbeat();
@@ -177,6 +193,12 @@ function registerIpcHandlers({
   app.on('before-quit', () => {
     stopHeartbeat();
     sendHeartbeat(false); // best-effort; see the note above
+  });
+
+  ipcMain.handle('fileserver:status', async () => {
+    const st = fileserver.fileServerStatus();
+    const cfg = fileServerConfig();
+    return { ...st, folderCount: (cfg.folders || []).length, paired: !!cfg.token };
   });
 
   ipcMain.handle('pairing:heartbeatNow', async () => await sendHeartbeat(true));

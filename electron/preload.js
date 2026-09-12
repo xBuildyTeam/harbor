@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pollPairing: (code) => ipcRenderer.invoke('pairing:poll', code),
   unpair: () => ipcRenderer.invoke('pairing:unpair'),
   heartbeatNow: () => ipcRenderer.invoke('pairing:heartbeatNow'),
+  getFileServerStatus: () => ipcRenderer.invoke('fileserver:status'),
   listSharedFolders: () => ipcRenderer.invoke('pairing:listFolders'),
   addSharedFolder: () => ipcRenderer.invoke('pairing:addFolder'),
   removeSharedFolder: (p) => ipcRenderer.invoke('pairing:removeFolder', p),

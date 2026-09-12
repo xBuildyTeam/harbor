@@ -365,6 +365,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const foldersRow = document.getElementById('pairing-folders-row');
     const folderCount = document.getElementById('pairing-folder-count');
 
+    const fsRow = document.getElementById('fileserver-row');
+    const fsText = document.getElementById('fileserver-status-text');
+
+    async function refreshFileServer() {
+      if (!fsRow || !fsText || !api.getFileServerStatus) return;
+      let st = null;
+      try {
+        st = await api.getFileServerStatus();
+      } catch (e) {
+        st = null;
+      }
+      if (!st || !st.paired) { fsRow.style.display = 'none'; return; }
+      fsRow.style.display = 'flex';
+      fsText.textContent = st.running
+        ? `Listening on 127.0.0.1:${st.port} (read-only)`
+        : 'Stopped';
+    }
+
     async function refreshFolders() {
       if (!foldersRow || !folderCount || !api.listSharedFolders) return;
       let folders = [];
@@ -390,11 +408,13 @@ document.addEventListener('DOMContentLoaded', () => {
           btn.textContent = 'Unpair';
           if (foldersRow) foldersRow.style.display = 'flex';
           await refreshFolders();
+          await refreshFileServer();
         } else {
           dot.className = 'status-dot offline';
           statusText.textContent = 'Not paired';
           btn.textContent = 'Pair Device';
           if (foldersRow) foldersRow.style.display = 'none';
+          if (fsRow) fsRow.style.display = 'none';
         }
       } catch (e) {
         statusText.textContent = 'Status unavailable';
@@ -405,7 +425,7 @@ document.addEventListener('DOMContentLoaded', () => {
       folderCount.addEventListener('click', async () => {
         if (!api.addSharedFolder) return;
         const res = await api.addSharedFolder().catch(() => null);
-        if (res && res.ok) await refreshFolders();
+        if (res && res.ok) { await refreshFolders(); await refreshFileServer(); }
       });
     }
 
