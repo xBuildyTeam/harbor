@@ -118,7 +118,11 @@
         </div>
         <div id="fileserver-row" class="card-body" style="display:none;">
           <span class="card-subtitle">File server</span>
-          <span id="fileserver-status-text">Stopped</span>
+          <span class="value-with-eye">
+            <span id="fileserver-status-text">Stopped</span>
+            <button id="btn-reveal" class="reveal-eye" type="button"
+              title="Show local address and public tunnel URL">&#128065;</button>
+          </span>
         </div>
         <div id="pairing-code-row" class="card-body" style="display:none; flex-direction:column; align-items:flex-start; gap:6px;">
           <span class="card-subtitle">Enter this code in Wave OS</span>

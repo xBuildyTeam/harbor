@@ -512,3 +512,32 @@ html, body {
   font-weight: 600;
   text-transform: capitalize;
 }
+
+/* Privacy mask for local addresses and the public tunnel hostname.
+   Default state is MASKED, so a screen recording started without thinking does
+   not leak the tunnel URL - that hostname is the one that actually matters,
+   since it is reachable from anywhere. */
+.masked {
+  filter: blur(6px);
+  user-select: none;
+  pointer-events: none;
+}
+
+.reveal-eye {
+  background: none;
+  border: none;
+  padding: 0 0 0 6px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+.reveal-eye:hover { opacity: 1; }
+
+.value-with-eye {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}

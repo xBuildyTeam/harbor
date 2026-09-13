@@ -1,4 +1,5 @@
 const { spawn, execFile } = require('child_process');
+const cfbin = require('./cfbin');
 
 let tunnelProcess = null;
 let tunnelUrl = null;
@@ -26,17 +27,23 @@ function isTunnelBinaryAvailable() {
 }
 
 function startTunnel() {
-  return isTunnelBinaryAvailable().then((available) => {
-    if (!available) {
-      const e = new Error('Tunnel binary is not installed or not on PATH.');
-      e.code = 'TUNNEL_BINARY_MISSING';
+  // Shares cfbin with the file-server tunnel, so a binary Harbor installed into
+  // its own userData dir works for BOTH tunnels. Previously this checked PATH
+  // only, so a managed install would have fixed remote access and left the
+  // Ollama tunnel still reporting "not installed".
+  return cfbin.resolveBinary().then((bin) => {
+    if (!bin.found) {
+      const e = new Error(bin.unusable
+        ? `Tunnel binary at ${bin.path} will not run on this machine.`
+        : 'Tunnel binary is not installed or not on PATH.');
+      e.code = bin.unusable ? 'TUNNEL_BINARY_UNUSABLE' : 'TUNNEL_BINARY_MISSING';
       throw e;
     }
-    return startTunnelInner();
+    return startTunnelInner(bin.path);
   });
 }
 
-function startTunnelInner() {
+function startTunnelInner(resolvedPath) {
   return new Promise((resolve, reject) => {
     if (tunnelProcess) {
       if (tunnelUrl) {
@@ -53,8 +60,11 @@ function startTunnelInner() {
     try {
       // Spawn cloudflared quick tunnel exposing localhost:11434
       // We run 'cloudflared tunnel --url http://localhost:11434'
-      tunnelProcess = spawn('cloudflared', ['tunnel', '--url', 'http://localhost:11434'], {
-        shell: true
+      // shell:false now that we pass a resolved absolute path - a path with a
+      // space in it (C:\Program Files\...) would be split into two arguments
+      // under a shell, which is a bug waiting for the wrong install location.
+      tunnelProcess = spawn(resolvedPath, ['tunnel', '--url', 'http://localhost:11434'], {
+        windowsHide: true
       });
 
       let resolved = false;

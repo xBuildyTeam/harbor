@@ -9,6 +9,7 @@
 // This is OPT-IN. Pairing alone must never publish a home PC to the internet;
 // that has to be a decision someone makes on purpose.
 const { spawn } = require('child_process');
+const cfbin = require('./cfbin');
 
 const BIN = 'cloud' + 'flared';
 const URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
@@ -34,6 +35,25 @@ function startFileTunnel(port, timeoutMs = 30000) {
   if (starting) return Promise.resolve({ ok: false, error: 'Already starting' });
   starting = true;
 
+  return cfbin.resolveBinary().then((bin) => {
+    if (!bin.found) {
+      starting = false;
+      // Distinguish the two, because they need OPPOSITE actions: absent means
+      // install it; present-but-unusable means the install is already there and
+      // something else (arch, antivirus) is wrong.
+      return {
+        ok: false,
+        needsInstall: !bin.unusable,
+        error: bin.unusable
+          ? `Tunnel binary found at ${bin.path} but it will not run here - architecture mismatch or blocked by antivirus`
+          : 'Cloudflare Tunnel is not installed',
+      };
+    }
+    return startWithBinary(bin.path, port, timeoutMs);
+  });
+}
+
+function startWithBinary(resolvedPath, port, timeoutMs) {
   return new Promise((resolve) => {
     let settled = false;
     const done = (result) => {
@@ -45,7 +65,10 @@ function startFileTunnel(port, timeoutMs = 30000) {
 
     let child;
     try {
-      child = spawn(BIN, ['tunnel', '--url', `http://127.0.0.1:${port}`], {
+      // resolved.path, never the bare name: a copy Harbor installed into its own
+      // userData dir is not on PATH, and PATH itself is captured at launch so a
+      // just-installed binary would be invisible until a restart.
+      child = spawn(resolvedPath, ['tunnel', '--url', `http://127.0.0.1:${port}`], {
         windowsHide: true,
       });
     } catch (e) {

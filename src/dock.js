@@ -21,6 +21,28 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnToggleTunnel = document.getElementById('btn-toggle-tunnel');
   const tunnelUrlText = document.getElementById('tunnel-url-text');
 
+  // PRIVACY MASK. Default is hidden, and that default matters more than the
+  // toggle: the failure this prevents is starting a screen recording without
+  // remembering to hide anything. Two values qualify - the local file-server
+  // address, and the public tunnel hostname. The tunnel hostname is the
+  // genuinely sensitive one, since it is reachable from anywhere, so masking the
+  // localhost line and leaving that visible would have been security theatre.
+  let revealLocal = false;
+
+  function setMasked(el, sensitive) {
+    if (!el) return;
+    if (sensitive && !revealLocal) el.classList.add('masked');
+    else el.classList.remove('masked');
+  }
+
+  function applyMasks() {
+    // Only mask values that actually carry an address. Blurring the word
+    // "Inactive" would just look broken.
+    setMasked(tunnelUrlText, !!tunnelUrlText && !!tunnelUrlText.getAttribute('data-url'));
+    const fsEl = document.getElementById('fileserver-status-text');
+    setMasked(fsEl, !!fsEl && /\d/.test(fsEl.textContent || ''));
+  }
+
   const btnChat = document.getElementById('btn-chat');
   const btnSettings = document.getElementById('btn-settings');
 
@@ -120,6 +142,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tunnelUrlText.textContent = window.sharedUtils.truncateUrl(url);
         tunnelUrlText.setAttribute('data-url', url);
         tunnelUrlText.title = `Click to copy public URL: ${url}`;
+        applyMasks();
       } else {
         isTunnelRunning = false;
         dotTunnel.className = 'status-dot offline';
@@ -128,6 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tunnelUrlText.textContent = 'Inactive';
         tunnelUrlText.removeAttribute('data-url');
         tunnelUrlText.title = 'Inactive (Start tunnel to generate url)';
+        applyMasks();
       }
     } catch (err) {
       console.error('Failed to get tunnel URL:', err);
@@ -203,6 +227,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Start / Stop Cloudflare Tunnel
   btnToggleTunnel.addEventListener('click', async () => {
+    // Intercept BEFORE the start path: clicking "Start Tunnel" on a machine with
+    // no binary is what produced the useless "Tunnel failed to start" toast.
+    if (btnToggleTunnel.dataset.needsInstall === '1' && window.electronAPI && window.electronAPI.installTunnelBin) {
+      btnToggleTunnel.disabled = true;
+      const original = btnToggleTunnel.textContent;
+      btnToggleTunnel.textContent = 'Installing…';
+      tunnelUrlText.textContent = 'Downloading (~70MB)…';
+      let res = null;
+      try { res = await window.electronAPI.installTunnelBin(); } catch (e) { res = { ok: false, error: e.message }; }
+      btnToggleTunnel.disabled = false;
+      if (!res || !res.ok) {
+        btnToggleTunnel.textContent = original;
+        tunnelUrlText.textContent = 'Install failed';
+        tunnelUrlText.title = (res && res.error) || 'Install failed';
+        return;
+      }
+      delete btnToggleTunnel.dataset.needsInstall;
+      btnToggleTunnel.textContent = 'Start Tunnel';
+      btnToggleTunnel.title = res.version || '';
+      tunnelUrlText.textContent = 'Inactive';
+      tunnelUrlText.title = 'Installed. Click Start Tunnel.';
+      return;
+    }
     btnToggleTunnel.disabled = true;
     if (isTunnelRunning) {
       tunnelUrlText.textContent = 'Stopping...';
@@ -405,6 +452,65 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
+    const btnReveal = document.getElementById('btn-reveal');
+    if (btnReveal) {
+      btnReveal.addEventListener('click', async () => {
+        revealLocal = !revealLocal;
+        applyMasks();
+        btnReveal.title = revealLocal
+          ? 'Hide local address and public tunnel URL'
+          : 'Show local address and public tunnel URL';
+        // Persisted, so it survives a restart - but it persists the HIDDEN
+        // default too, which is the point: you opt into exposure, never into
+        // concealment.
+        if (api.setPrivacy) { try { await api.setPrivacy(revealLocal); } catch (e) { /* non-fatal */ } }
+      });
+    }
+
+    async function loadPrivacy() {
+      if (!api.getPrivacy) return;
+      try {
+        const st = await api.getPrivacy();
+        revealLocal = !!(st && st.reveal);
+      } catch (e) {
+        revealLocal = false;
+      }
+      applyMasks();
+    }
+    loadPrivacy();
+
+    // ---- tunnel binary preflight ----
+    // The whole point: say "not installed" BEFORE someone clicks, instead of
+    // "failed to start" after. A7_Max spent a real debugging session on exactly
+    // this, with the file server running fine the entire time.
+    async function refreshTunnelBinary() {
+      if (!api.getTunnelBinStatus) return null;
+      let bin = null;
+      try { bin = await api.getTunnelBinStatus(); } catch (e) { return null; }
+      if (!bin) return null;
+      if (!bin.found) {
+        if (bin.unusable) {
+          btnToggleTunnel.textContent = 'Repair';
+          btnToggleTunnel.title = `Found at ${bin.path} but it will not run here - wrong architecture, or blocked by antivirus`;
+        } else if (bin.installable) {
+          btnToggleTunnel.textContent = 'Install';
+          btnToggleTunnel.title = 'Cloudflare Tunnel is not installed. Click to download it (~70MB, no admin rights needed).';
+        } else {
+          btnToggleTunnel.textContent = 'Unavailable';
+          btnToggleTunnel.title = 'No prebuilt tunnel binary for this platform';
+        }
+        btnToggleTunnel.dataset.needsInstall = '1';
+        tunnelUrlText.textContent = 'Not installed';
+        tunnelUrlText.removeAttribute('data-url');
+        applyMasks();
+      } else {
+        delete btnToggleTunnel.dataset.needsInstall;
+        btnToggleTunnel.title = bin.version ? `${bin.version} (${bin.source})` : '';
+      }
+      return bin;
+    }
+    refreshTunnelBinary();
+
     async function refreshFileServer() {
       if (!fsRow || !fsText || !api.getFileServerStatus) return;
       let st = null;
@@ -418,6 +524,7 @@ document.addEventListener('DOMContentLoaded', () => {
       fsText.textContent = st.running
         ? `Listening on 127.0.0.1:${st.port} (read-only)`
         : 'Stopped';
+      applyMasks();
     }
 
     async function refreshFolders() {

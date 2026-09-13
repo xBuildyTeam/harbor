@@ -7,38 +7,60 @@ const ollama = require('./ollama');
 const tunnel = require('./tunnel');
 
 const settingsPath = path.join(app.getPath('userData'), 'wave-dock-settings.json');
+const cfbin = require('./cfbin');
+// Harbor's managed binary lives beside its settings, so it needs no admin rights
+// and cannot be missed by a stale PATH.
+cfbin.configure(app.getPath('userData'));
+
+// ONE SOURCE OF TRUTH for persisted keys.
+//
+// This whitelist has silently dropped a field FIVE separate times
+// (sharedFolders, deviceToken, relaySecret, remoteAccessEnabled, and the
+// original). The failure mode is nasty: the write returns fine, the value is
+// simply gone on the next save, so it presents as "the setting keeps resetting"
+// with no error anywhere. Declaring keys in two places is what caused that, so
+// now there is one place, and an unknown key COMPLAINS instead of vanishing.
+const SETTINGS_SCHEMA = {
+  aiMode: (v) => v || 'auto',
+  chatCollapsed: (v) => !!v,
+  conversations: (v) => (Array.isArray(v) ? v : []),
+  agentId: (v) => v || null,
+  deviceId: (v) => v || null,
+  deviceToken: (v) => v || null,
+  pairedAt: (v) => v || null,
+  sharedFolders: (v) => (Array.isArray(v) ? v : []),
+  relaySecret: (v) => v || null,
+  remoteAccessEnabled: (v) => v === true,
+  // Privacy: local addresses and the public tunnel hostname are masked in the
+  // dock by default so a screen recording does not leak them. Default false
+  // means "hidden" - the safe state has to be the one you get by doing nothing.
+  revealLocalDetails: (v) => v === true,
+};
+
+const SETTINGS_KEYS = Object.keys(SETTINGS_SCHEMA);
 
 function getSettingsData() {
+  let raw = {};
   try {
     if (fs.existsSync(settingsPath)) {
-      const data = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      return {
-        aiMode: data.aiMode || 'auto',
-        chatCollapsed: !!data.chatCollapsed,
-        conversations: Array.isArray(data.conversations) ? data.conversations : [],
-        // Pairing state. NOTE: this function is a WHITELIST - saveSettingsData
-        // merges over its result, so any key missing here is silently dropped on
-        // the next write. Adding a persisted field means adding it in both places.
-        agentId: data.agentId || null,
-        deviceId: data.deviceId || null,
-        deviceToken: data.deviceToken || null,
-        pairedAt: data.pairedAt || null,
-        sharedFolders: Array.isArray(data.sharedFolders) ? data.sharedFolders : [],
-        relaySecret: data.relaySecret || null,
-        remoteAccessEnabled: data.remoteAccessEnabled === true
-      };
+      raw = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) || {};
     }
   } catch (e) {
-    console.error('Failed to read settings:', e);
+    raw = {};
   }
-  return {
-    aiMode: 'auto', chatCollapsed: false, conversations: [],
-    agentId: null, deviceId: null, deviceToken: null, pairedAt: null,
-    sharedFolders: [], relaySecret: null, remoteAccessEnabled: false
-  };
+  const out = {};
+  for (const key of SETTINGS_KEYS) out[key] = SETTINGS_SCHEMA[key](raw[key]);
+  return out;
 }
 
 function saveSettingsData(newSettings) {
+  // Sixth time is not the charm. An undeclared key would be dropped on the next
+  // read, so say so at the moment it happens rather than weeks later.
+  for (const key of Object.keys(arguments[0] || {})) {
+    if (!SETTINGS_KEYS.includes(key)) {
+      console.error(`[settings] REFUSING unknown key "${key}" - add it to SETTINGS_SCHEMA or it will be silently dropped`);
+    }
+  }
   try {
     const current = getSettingsData();
     const updated = { ...current, ...newSettings };
@@ -217,6 +239,33 @@ function registerIpcHandlers({
     sendHeartbeat(false); // best-effort; see the note above
   });
 
+  ipcMain.handle('tunnelbin:status', async () => {
+    const bin = await cfbin.resolveBinary();
+    return {
+      found: bin.found,
+      source: bin.source,
+      version: bin.version,
+      unusable: !!bin.unusable,
+      path: bin.path,
+      installable: !!cfbin.assetName(),
+    };
+  });
+
+  ipcMain.handle('tunnelbin:install', async () => {
+    const before = await cfbin.resolveBinary();
+    if (before.found) return { ok: true, already: true, version: before.version };
+    return await cfbin.installBinary();
+  });
+
+  ipcMain.handle('privacy:get', async () => {
+    return { reveal: getSettingsData().revealLocalDetails === true };
+  });
+
+  ipcMain.handle('privacy:set', async (event, reveal) => {
+    saveSettingsData({ revealLocalDetails: reveal === true });
+    return { ok: true, reveal: reveal === true };
+  });
+
   ipcMain.handle('remote:status', async () => {
     const st = getSettingsData();
     return {
@@ -240,7 +289,7 @@ function registerIpcHandlers({
     const res = await filetunnel.startFileTunnel(srv.port);
     if (!res.ok) {
       saveSettingsData({ remoteAccessEnabled: false });
-      return { ok: false, error: res.error };
+      return { ok: false, error: res.error, needsInstall: !!res.needsInstall };
     }
     await sendHeartbeat(true); // publish the new hostname without waiting 30s
     return { ok: true, enabled: true, url: res.url };
