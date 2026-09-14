@@ -275,8 +275,38 @@ function handle(req, res, scope, getConfig) {
   //   relay_secret  - what Wave OS's harborRelay presents; Wave OS stores it
   //                   encrypted-at-rest precisely so it CAN present it.
   // Accepting only the device token, as v3.2.0 did, 401s every relayed request.
-  const presented = req.headers['x-harbor-token']
+  // Parsed BEFORE the auth check, because one narrow case below needs the route
+  // to decide whether a query-string credential is acceptable.
+  let url;
+  try {
+    url = new URL(req.url, 'http://127.0.0.1');
+  } catch (e) {
+    return send(res, 400, { error: 'Bad request' });
+  }
+  const route = url.pathname;
+
+  let presented = req.headers['x-harbor-token']
     || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+
+  // QUERY-STRING CREDENTIAL, DELIBERATELY NARROW. A <video> or <audio> element
+  // cannot send an Authorization header - you hand it a URL and it issues its own
+  // range requests - so header-only auth means media can never stream, only be
+  // buffered whole through IPC. That is a real capability loss for large video.
+  // The concession is therefore fenced on three sides at once:
+  //   - LOCAL SCOPE ONLY. The shared scope is TUNNELLED, and a token in a query
+  //     string there would traverse a third-party edge network and land in its
+  //     request logs. Header-only, always, on 47615.
+  //   - /stream ONLY. /list and /roots are called by fetch(), which can set
+  //     headers, so they have no need of this and do not get it.
+  //   - Header form still preferred; the query is consulted only when no header
+  //     was presented at all.
+  // Residual cost, stated rather than hidden: the token appears in the element's
+  // src and therefore in the DOM. It is loopback-only, per-launch, in-memory and
+  // read-only, so what it grants dies with the process - but it is a wider
+  // exposure than a header and should not be widened further.
+  if (!presented && scope === 'local' && route === '/stream') {
+    presented = url.searchParams.get('token') || '';
+  }
   // CREDENTIALS ARE PER-SCOPE AND MUST NOT OVERLAP. The local token authorises the
   // WHOLE DISK, so it is accepted ONLY by the local listener - which is never
   // tunnelled. device_token and relay_secret authorise the shared scope only, so
@@ -292,14 +322,6 @@ function handle(req, res, scope, getConfig) {
     if (presented && timingSafeEqualStr(presented, candidate)) authed = true;
   }
   if (!authed) return send(res, 401, { error: 'Unauthorized' });
-
-  let url;
-  try {
-    url = new URL(req.url, 'http://127.0.0.1');
-  } catch (e) {
-    return send(res, 400, { error: 'Bad request' });
-  }
-  const route = url.pathname;
 
   if (route === '/health') {
     return send(res, 200, { ok: true, folders: (cfg.folders || []).length });
