@@ -415,25 +415,6 @@ function registerIpcHandlers({
     };
   });
 
-  // Byte channel over IPC, for callers that just want the bytes and do not need
-  // range requests. The existing fs:read-file is utf-8 ONLY, which is exactly why
-  // text files opened on the local drive and media did not: a decoded string
-  // cannot carry an mp3. Returns a Buffer, which Electron delivers to the renderer
-  // as a Uint8Array, so the page can build a correctly-typed Blob.
-  // Capped, because this copies the whole file through IPC into the renderer -
-  // anything larger should use local:endpoint and stream it with Range instead.
-  ipcMain.handle('fs:read-file-bytes', async (event, filePath) => {
-    if (isPathBlocked(filePath)) return { error: 'Access denied: system directory' };
-    try {
-      const stat = await fsPromises.stat(filePath);
-      if (!stat.isFile()) return { error: 'Not a file' };
-      if (stat.size > 100 * 1024 * 1024) {
-        return { error: 'File too large for the IPC byte channel', size: stat.size, useEndpoint: true };
-      }
-      const bytes = await fsPromises.readFile(filePath);
-      return { bytes, size: stat.size, name: path.basename(filePath) };
-    } catch (e) { return { error: e.message }; }
-  });
 
   // --- Settings & Conversation Handlers ---
   ipcMain.handle('settings:get', async () => {
@@ -662,6 +643,26 @@ function registerFsHandlers(ipcMain, app, shell) {
       if (stat.size > 5 * 1024 * 1024) return { error: 'File too large for inline preview', size: stat.size };
       const content = await fsPromises.readFile(filePath, 'utf-8');
       return { content, size: stat.size };
+    } catch (e) { return { error: e.message }; }
+  });
+
+  // Byte channel over IPC, for callers that just want the bytes and do not need
+  // range requests. The existing fs:read-file is utf-8 ONLY, which is exactly why
+  // text files opened on the local drive and media did not: a decoded string
+  // cannot carry an mp3. Returns a Buffer, which Electron delivers to the renderer
+  // as a Uint8Array, so the page can build a correctly-typed Blob.
+  // Capped, because this copies the whole file through IPC into the renderer -
+  // anything larger should use local:endpoint and stream it with Range instead.
+  ipcMain.handle('fs:read-file-bytes', async (event, filePath) => {
+    if (isPathBlocked(filePath)) return { error: 'Access denied: system directory' };
+    try {
+      const stat = await fsPromises.stat(filePath);
+      if (!stat.isFile()) return { error: 'Not a file' };
+      if (stat.size > 100 * 1024 * 1024) {
+        return { error: 'File too large for the IPC byte channel', size: stat.size, useEndpoint: true };
+      }
+      const bytes = await fsPromises.readFile(filePath);
+      return { bytes, size: stat.size, name: path.basename(filePath) };
     } catch (e) { return { error: e.message }; }
   });
 
