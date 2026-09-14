@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getRemoteStatus: () => ipcRenderer.invoke('remote:status'),
   getTunnelBinStatus: () => ipcRenderer.invoke('tunnelbin:status'),
   installTunnelBin: () => ipcRenderer.invoke('tunnelbin:install'),
+  // Browser consent grants - full local read access for a browser that has no
+  // preload bridge, approved by a human typing a code shown in this window.
+  mintLocalGrantCode: () => ipcRenderer.invoke('localgrant:mint'),
+  listLocalGrants: () => ipcRenderer.invoke('localgrant:list'),
+  revokeLocalGrant: (id) => ipcRenderer.invoke('localgrant:revoke', id),
+  revokeAllLocalGrants: () => ipcRenderer.invoke('localgrant:revokeAll'),
   getPrivacy: () => ipcRenderer.invoke('privacy:get'),
   setPrivacy: (v) => ipcRenderer.invoke('privacy:set', v),
   setRemoteEnabled: (v) => ipcRenderer.invoke('remote:setEnabled', v),

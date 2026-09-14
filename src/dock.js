@@ -34,7 +34,88 @@ function applyMasks() {
  * Harbor Renderer - Dock Widget Logic
  */
 
+// --- Browser consent grants -------------------------------------------------
+// MODULE SCOPE ON PURPOSE. dock.js has two independent top-level regions, and
+// v3.4.0 declared helpers inside the DOMContentLoaded callback then called them
+// from the initPairing IIFE - a ReferenceError that got mislabelled as a pairing
+// fault and took out the whole remote-access row. Anything reachable from more
+// than one region lives out here.
+let grantCountdownTimer = null;
+
+function stopGrantCountdown() {
+  if (grantCountdownTimer) { clearInterval(grantCountdownTimer); grantCountdownTimer = null; }
+}
+
+function renderGrantCode(result) {
+  const row = document.getElementById('browser-grant-code-row');
+  const codeEl = document.getElementById('browser-grant-code');
+  const cdEl = document.getElementById('browser-grant-countdown');
+  if (!row || !codeEl || !cdEl) return;
+  if (!result || !result.ok) {
+    row.style.display = 'none';
+    const t = document.getElementById('browser-grant-text');
+    if (t) t.textContent = (result && result.error) ? result.error : 'Could not create a code';
+    return;
+  }
+  codeEl.textContent = result.code;
+  row.style.display = 'flex';
+  stopGrantCountdown();
+  const tick = () => {
+    const left = Math.max(0, Math.round((result.expiresAt - Date.now()) / 1000));
+    cdEl.textContent = left > 0 ? `Expires in ${left}s` : 'Expired — create a new one';
+    if (left <= 0) { stopGrantCountdown(); row.style.display = 'none'; refreshGrants(); }
+  };
+  tick();
+  grantCountdownTimer = setInterval(tick, 1000);
+}
+
+async function refreshGrants() {
+  const row = document.getElementById('browser-grant-active-row');
+  const textEl = document.getElementById('browser-grant-active-text');
+  if (!row || !textEl || !window.electronAPI || !window.electronAPI.listLocalGrants) return;
+  const res = await window.electronAPI.listLocalGrants();
+  const list = (res && res.grants) || [];
+  if (!list.length) {
+    textEl.textContent = 'None';
+    textEl.title = 'No browser has been given local access';
+    row.style.display = 'flex';
+    return;
+  }
+  // Show the soonest expiry, so "allowed" always carries its own deadline rather
+  // than reading as permanent.
+  const soonest = Math.min(...list.map(g => g.expiresInSeconds));
+  const hrs = Math.max(1, Math.round(soonest / 3600));
+  textEl.textContent = `${list.length} allowed — expires in ~${hrs}h — click to revoke`;
+  textEl.title = 'Click to revoke all browser access immediately';
+  row.style.display = 'flex';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  // Browser consent wiring. Shown unconditionally: local file access is not a
+  // cloud feature and must not be gated on having paired.
+  const grantRow = document.getElementById('browser-grant-row');
+  const grantText = document.getElementById('browser-grant-text');
+  if (grantRow) grantRow.style.display = 'flex';
+  if (grantText) {
+    grantText.addEventListener('click', async () => {
+      grantText.textContent = 'Creating a code\u2026';
+      const res = await window.electronAPI.mintLocalGrantCode();
+      grantText.textContent = 'Allow another browser\u2026';
+      renderGrantCode(res);
+      await refreshGrants();
+    });
+  }
+  const grantActive = document.getElementById('browser-grant-active-text');
+  if (grantActive) {
+    grantActive.addEventListener('click', async () => {
+      const res = await window.electronAPI.revokeAllLocalGrants();
+      if (res && res.revoked) grantActive.textContent = `Revoked ${res.revoked}`;
+      await refreshGrants();
+    });
+  }
+  refreshGrants();
+
+
   // Elements
   const btnExpand = document.getElementById('btn-expand');
   const btnMinimize = document.getElementById('btn-minimize');
@@ -346,7 +427,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const settings = await window.electronAPI.getSettings();
       if (settings && settings.aiMode) {
         currentAiMode = settings.aiMode;
-        lblAiMode.textContent = settings.aiMode.charAt(0).toUpperCase() + settings.aiMode.slice(1);
+        // GUARDED: #lbl-ai-mode has CSS in dock.css and a lookup here but NO
+        // element in dock.html, so this is null and the bare assignment threw a
+        // TypeError - swallowed by the catch below, which meant the modeButtons
+        // loop underneath NEVER RAN and the active mode button was never
+        // highlighted. Pre-existing, and the same shape as the v3.4.1 bug: a null
+        // DOM reference inside a broad try/catch, aborting the useful work after
+        // it and reporting nothing to the user.
+        if (lblAiMode) {
+          lblAiMode.textContent = settings.aiMode.charAt(0).toUpperCase() + settings.aiMode.slice(1);
+        }
         modeButtons.forEach(btn => {
           btn.classList.toggle('active', btn.dataset.mode === currentAiMode);
         });
@@ -362,7 +452,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', async () => {
       const mode = btn.dataset.mode;
       currentAiMode = mode;
-      lblAiMode.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+      if (lblAiMode) lblAiMode.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
       modeButtons.forEach(b => b.classList.toggle('active', b === btn));
       try {
         await window.electronAPI.setSettings({ aiMode: mode });

@@ -405,6 +405,17 @@ function registerIpcHandlers({
   // token so the page can issue real HTTP range requests against any local file -
   // which is what a media player needs and what the old file:// fallback could
   // never provide. Only reachable over the preload bridge.
+  // BROWSER CONSENT. Minting is reachable ONLY from Harbor's own window, over
+  // IPC. That is deliberate and load-bearing: if a web page could mint a code,
+  // the code would not be consent, it would be a formality. The human reading a
+  // code off Harbor's UI and typing it into the browser IS the security boundary.
+  ipcMain.handle('localgrant:mint', async () => fileserver.mintGrantCode());
+  ipcMain.handle('localgrant:list', async () => ({
+    grants: fileserver.listGrants(), pending: fileserver.pendingCodeStatus(),
+  }));
+  ipcMain.handle('localgrant:revoke', async (event, id) => fileserver.revokeGrant(id));
+  ipcMain.handle('localgrant:revokeAll', async () => fileserver.revokeAllGrants());
+
   ipcMain.handle('local:endpoint', async () => {
     const srv = fileserver.fileServerStatus();
     return {

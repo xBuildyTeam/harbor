@@ -124,6 +124,22 @@
               title="Show local address and public tunnel URL">&#128065;</button>
           </span>
         </div>
+        <div id="browser-grant-row" class="card-body" style="display:none;">
+          <span class="card-subtitle">Browser access</span>
+          <span id="browser-grant-text" class="interactive-text"
+            title="Give a browser on this PC full read access to your files">Allow a browser&hellip;</span>
+        </div>
+        <div id="browser-grant-code-row" class="card-body" style="display:none; flex-direction:column; align-items:flex-start; gap:6px;">
+          <span class="card-subtitle">Type this in Wave OS to allow full local access</span>
+          <span id="browser-grant-code" style="font-size:24px; font-weight:700; letter-spacing:4px; font-family:monospace;"></span>
+          <span id="browser-grant-countdown" class="card-subtitle"></span>
+          <span class="card-subtitle" style="opacity:.75;">Read-only. Revoked when Harbor quits.</span>
+        </div>
+        <div id="browser-grant-active-row" class="card-body" style="display:none;">
+          <span class="card-subtitle">Allowed browsers</span>
+          <span id="browser-grant-active-text" class="interactive-text"
+            title="Click to revoke all browser access">None</span>
+        </div>
         <div id="pairing-code-row" class="card-body" style="display:none; flex-direction:column; align-items:flex-start; gap:6px;">
           <span class="card-subtitle">Enter this code in Wave OS</span>
           <span id="pairing-code" style="font-size:26px; font-weight:700; letter-spacing:5px; font-family:monospace;"></span>

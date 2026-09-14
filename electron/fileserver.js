@@ -43,6 +43,138 @@ const servers = { shared: null, local: null };
 const ports = { shared: null, local: null };
 let getConfig = () => ({ token: null, folders: [] });
 
+// ===========================================================================
+// BROWSER CONSENT GRANTS
+//
+// THE PROBLEM. Inside Harbor's own window a page gets the whole-disk token over
+// the preload bridge, so only a page Harbor itself loaded can ever hold it. A
+// browser tab at https://app.oswave.io has no bridge - so on the machine the
+// files are actually ON, Wave OS could reach less than it can from a phone.
+//
+// WHY NOT JUST OPEN THE PORT. Because then ANY website you visit could fetch
+// http://127.0.0.1:47616 and read your home directory. The CORS allowlist
+// narrows that, but CORS is a browser courtesy, not an access control, and it
+// would still hand whole-disk read to anything running on an allowlisted origin -
+// including an XSS on oswave.io. An open loopback port IS the vulnerability
+// class; it must not be the design.
+//
+// THE CONSENT IS A HUMAN TYPING A CODE THAT ONLY APPEARS IN HARBOR'S WINDOW.
+// That is the whole security argument, and it is out-of-band by construction: a
+// website cannot read Harbor's UI, cannot script it, and cannot guess the code.
+// Nothing a page can do on its own produces access.
+//
+// PROPERTIES, EACH DELIBERATE:
+//   - The code is single-use, 120s TTL, crypto-random over an unambiguous
+//     alphabet (no O/0/I/1), and dies after 3 wrong attempts.
+//   - Redeeming returns a SEPARATE grant token, not the whole-disk local token,
+//     so a grant can be revoked without invalidating the bridge.
+//   - Grants live in MEMORY ONLY. Quitting Harbor revokes every one of them.
+//     That costs the user a re-consent after each restart, which is the correct
+//     trade: this credential reads your entire disk and must not be sitting in a
+//     settings file for the next process to find.
+//   - Bounded: MAX_GRANTS at once, so the surface cannot accumulate.
+//   - Grants are accepted ONLY by the local listener, which is never tunnelled.
+// ===========================================================================
+const GRANT_CODE_TTL_MS = 120 * 1000;
+const GRANT_TTL_MS = 8 * 60 * 60 * 1000;
+const GRANT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no O/0/I/1
+const MAX_GRANTS = 8;
+const MAX_CODE_ATTEMPTS = 3;
+
+const grants = new Map();        // token -> { id, origin, label, issuedAt, expiresAt }
+let pendingCode = null;          // { code, expiresAt, attempts }
+
+function randomCode() {
+  const bytes = crypto.randomBytes(8);
+  let out = '';
+  for (let i = 0; i < 8; i++) out += GRANT_CODE_ALPHABET[bytes[i] % GRANT_CODE_ALPHABET.length];
+  return out.slice(0, 4) + '-' + out.slice(4);
+}
+
+function pruneGrants() {
+  const now = Date.now();
+  for (const [tok, g] of grants) if (g.expiresAt <= now) grants.delete(tok);
+  if (pendingCode && pendingCode.expiresAt <= now) pendingCode = null;
+}
+
+// Called from Harbor's OWN UI over IPC. Never reachable over HTTP - if a page
+// could mint a code, the code would not be consent.
+function mintGrantCode() {
+  pruneGrants();
+  if (grants.size >= MAX_GRANTS) {
+    return { ok: false, error: 'Too many active grants. Revoke one first.' };
+  }
+  pendingCode = { code: randomCode(), expiresAt: Date.now() + GRANT_CODE_TTL_MS, attempts: 0 };
+  return { ok: true, code: pendingCode.code, expiresAt: pendingCode.expiresAt,
+           ttlSeconds: Math.round(GRANT_CODE_TTL_MS / 1000) };
+}
+
+function redeemGrantCode(submitted, origin) {
+  pruneGrants();
+  if (!pendingCode) return { ok: false, status: 403, error: 'No pending consent. Generate a code in Harbor first.' };
+  const given = String(submitted || '').trim().toUpperCase().replace(/\s+/g, '');
+  const want = pendingCode.code.toUpperCase();
+  // Normalise the dash so "ABCD-EFGH" and "ABCDEFGH" both work - a human is
+  // retyping this, and rejecting a correct code on punctuation is user-hostile.
+  const norm = (v) => v.replace(/-/g, '');
+  if (!given || !timingSafeEqualStr(norm(given), norm(want))) {
+    pendingCode.attempts++;
+    const left = MAX_CODE_ATTEMPTS - pendingCode.attempts;
+    if (left <= 0) { pendingCode = null; return { ok: false, status: 403, error: 'Too many wrong attempts. Generate a new code in Harbor.' }; }
+    return { ok: false, status: 403, error: 'Incorrect code. ' + left + ' attempt(s) left.' };
+  }
+  pendingCode = null;                                  // single use
+  if (grants.size >= MAX_GRANTS) return { ok: false, status: 429, error: 'Too many active grants.' };
+  const token = crypto.randomBytes(32).toString('hex');
+  const id = crypto.randomBytes(4).toString('hex');
+  const g = { id, origin: origin || null, label: origin || 'unknown origin',
+              issuedAt: Date.now(), expiresAt: Date.now() + GRANT_TTL_MS };
+  grants.set(token, g);
+  return { ok: true, token, id, expiresAt: g.expiresAt, origin: g.origin };
+}
+
+// ORIGIN IS ENFORCED WHEN PRESENT, AND ITS ABSENCE IS TOLERATED ONLY ON /stream.
+// A <video> or <audio> element without a crossorigin attribute sends NO Origin
+// header, so strict enforcement would break the one case the HTTP endpoint exists
+// to serve. Origin here is defence-in-depth rather than the primary control - the
+// primary control is that the grant token is unguessable and was handed out only
+// after a human typed a code from Harbor's window. Narrow relaxation, stated
+// rather than silently assumed, same shape as the ?token= concession.
+function validateGrant(token, origin, route) {
+  pruneGrants();
+  if (!token) return false;
+  const g = grants.get(token);
+  if (!g) return false;
+  if (g.expiresAt <= Date.now()) { grants.delete(token); return false; }
+  if (g.origin && origin && origin !== g.origin) return false;
+  if (g.origin && !origin && route !== '/stream') return false;
+  return true;
+}
+
+function listGrants() {
+  pruneGrants();
+  return [...grants.values()].map(g => ({
+    id: g.id, origin: g.origin, issuedAt: g.issuedAt, expiresAt: g.expiresAt,
+    expiresInSeconds: Math.max(0, Math.round((g.expiresAt - Date.now()) / 1000)),
+  }));
+}
+
+function revokeGrant(id) {
+  for (const [tok, g] of grants) if (g.id === id) { grants.delete(tok); return { ok: true }; }
+  return { ok: false, error: 'No such grant' };
+}
+
+function revokeAllGrants() {
+  const n = grants.size; grants.clear(); pendingCode = null; return { ok: true, revoked: n };
+}
+
+function pendingCodeStatus() {
+  pruneGrants();
+  if (!pendingCode) return { pending: false };
+  return { pending: true, code: pendingCode.code, expiresAt: pendingCode.expiresAt,
+           expiresInSeconds: Math.max(0, Math.round((pendingCode.expiresAt - Date.now()) / 1000)) };
+}
+
 function timingSafeEqualStr(a, b) {
   const ba = Buffer.from(String(a || ''), 'utf8');
   const bb = Buffer.from(String(b || ''), 'utf8');
@@ -266,7 +398,10 @@ function handle(req, res, scope, getConfig) {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     return send(res, 405, { error: 'Read-only server' });
   }
-  if (!cfg.token) return send(res, 503, { error: 'Not paired' });
+  // The shared scope genuinely needs pairing - it exists to serve Wave OS. The
+  // local scope does not: files on this PC are readable by the person at this PC
+  // whether or not a cloud account was ever connected.
+  if (scope !== 'local' && !cfg.token) return send(res, 503, { error: 'Not paired' });
 
   // TWO valid credentials, because two different peers call this server and the
   // credentials travel in opposite directions:
@@ -321,7 +456,36 @@ function handle(req, res, scope, getConfig) {
   for (const candidate of accepted) {
     if (presented && timingSafeEqualStr(presented, candidate)) authed = true;
   }
+  // A consent grant is a second way to satisfy the LOCAL scope only. It is never
+  // in `accepted` for the shared scope, so a grant can never reach the tunnelled
+  // listener however it was obtained.
+  if (!authed && scope === 'local' && validateGrant(presented, req.headers.origin, route)) {
+    authed = true;
+  }
+  // The consent redemption itself cannot require a credential - the code IS the
+  // credential, and it is checked inside redeemGrantCode with its own attempt
+  // limit. Placed after the read-only guard and the CORS handling above, so it
+  // is still GET-only and still origin-gated.
+  if (!authed && scope === 'local' && route === '/grant/redeem') {
+    const r = redeemGrantCode(url.searchParams.get('code'), req.headers.origin);
+    if (!r.ok) return send(res, r.status || 403, { error: r.error });
+    return send(res, 200, {
+      token: r.token, grantId: r.id, expiresAt: r.expiresAt, origin: r.origin,
+      scope: 'local',
+      notice: 'Full local read access, in memory only. Revoked when Harbor quits.',
+    });
+  }
   if (!authed) return send(res, 401, { error: 'Unauthorized' });
+
+  if (route === '/grants') {
+    if (scope !== 'local') return send(res, 404, { error: 'Not found' });
+    // Deliberately NOT readable with a grant token - a granted browser must not
+    // be able to enumerate or reason about the other grants on the machine.
+    if (!cfg.localToken || !timingSafeEqualStr(presented, cfg.localToken)) {
+      return send(res, 403, { error: 'Only Harbor itself can list grants' });
+    }
+    return send(res, 200, { grants: listGrants(), pending: pendingCodeStatus() });
+  }
 
   if (route === '/health') {
     return send(res, 200, { ok: true, folders: (cfg.folders || []).length });
@@ -343,10 +507,29 @@ function handle(req, res, scope, getConfig) {
   // disks is exactly the whole-filesystem exposure the shared-folder model
   // exists to replace.
   if (route === '/drives') {
-    return send(res, 403, {
-      error: 'Whole-disk enumeration is not offered. Use /roots for the folders the user shared.',
-      refused_by_design: true,
-    });
+    // REFUSED ON THE SHARED SCOPE, ALLOWED ON THE LOCAL ONE - the same endpoint
+    // name, two opposite answers, because the scopes mean different things.
+    // Whole-disk enumeration through the tunnel is the exposure the shared-folder
+    // model exists to prevent. On the local scope it is the entire point, and the
+    // caller already holds either the bridge token or a human-approved grant.
+    if (scope !== 'local') {
+      return send(res, 403, {
+        error: 'Whole-disk enumeration is not available over a share',
+        refused_by_design: true,
+        hint: 'Use /roots for the folders this device actually shares.',
+      });
+    }
+    const out = [];
+    if (process.platform === 'win32') {
+      for (let i = 65; i <= 90; i++) {
+        const root = String.fromCharCode(i) + ':\\';
+        try { fs.accessSync(root); out.push({ path: root, label: String.fromCharCode(i) + ':' }); }
+        catch (e) { /* drive letter not present */ }
+      }
+    } else {
+      out.push({ path: '/', label: '/' });
+    }
+    return send(res, 200, { drives: out });
   }
 
   if (route === '/list' || route === '/read-dir') {
@@ -481,4 +664,5 @@ function localServerStatus() {
 module.exports = {
   startFileServer, stopFileServer, fileServerStatus, resolveShared, isInside, DEFAULT_PORT,
   contentTypeFor, resolveLocal, resolveForScope, LOCAL_PORT, localServerStatus,
+  mintGrantCode, listGrants, revokeGrant, revokeAllGrants, pendingCodeStatus,
 };
