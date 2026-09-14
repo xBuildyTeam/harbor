@@ -39,7 +39,20 @@ function isStarting() {
 // stable across restarts. That is fine here only because the heartbeat
 // republishes it every 30s - Wave OS always learns the current one within a
 // heartbeat. Do not cache it anywhere with a longer life than that.
+// Refuse point-blank to publish the local-scope port. Nothing should ever pass it
+// here - the local listener is started separately and never handed to this
+// function - but the failure mode of getting it wrong is the UNRESTRICTED
+// whole-disk server exposed to the internet, and that is worth more than one line
+// of defence. A per-scope-state bug made exactly this reachable in development.
+const REFUSED_PORTS = new Set([47616]);
+
 function startFileTunnel(port, timeoutMs = 30000) {
+  if (REFUSED_PORTS.has(Number(port))) {
+    const msg = 'Refusing to tunnel port ' + port + ': that is the local-scope '
+      + 'file server, which serves the whole disk and must never be published.';
+    console.error('[harbor] ' + msg);
+    return Promise.resolve({ ok: false, error: msg, refusedByDesign: true });
+  }
   if (proc && publicUrl) return Promise.resolve({ ok: true, url: publicUrl, already: true });
   if (starting) return Promise.resolve({ ok: false, error: 'Already starting' });
   starting = true;

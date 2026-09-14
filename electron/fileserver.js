@@ -15,10 +15,32 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DEFAULT_PORT = 47615;
+const DEFAULT_PORT = 47615;       // SHARED scope. The tunnel points here.
+const LOCAL_PORT = 47616;         // LOCAL scope. NOTHING may ever tunnel this.
 
-let server = null;
-let boundPort = null;
+// WHY TWO SOCKETS INSTEAD OF ONE SERVER WITH A LOOPBACK CHECK.
+// The obvious guard - "only serve the unrestricted scope to requests whose
+// remote address is loopback" - DOES NOT WORK, and would have shipped a
+// whole-disk hole reachable from the internet. cloudflared runs ON THIS PC and
+// connects to 127.0.0.1, so tunnelled requests arrive from loopback too and are
+// indistinguishable from a local page's request at the socket level.
+// So the separation has to be structural: two listeners, two credentials, two
+// scopes, and the tunnel is only ever handed DEFAULT_PORT. What keeps the whole
+// disk private is which port cloudflared was told to forward - a fact about
+// wiring, not a predicate that can be fooled.
+
+// PER-SCOPE STATE, NOT A SINGLETON. This was `let server` + `let boundPort`, and
+// with two listeners that single pair became a RACE: whichever socket finished
+// binding last owned boundPort, and fileServerStatus() is what feeds
+// startFileTunnel(). So cloudflared could have been handed 47616 and published
+// the UNRESTRICTED WHOLE-DISK listener to the open internet. The token gate was
+// the only thing left standing between that and someone's home directory.
+// Worth recording how close it came: 18 headless checks passed on the broken
+// version, because the test started both servers inside one Promise.all and both
+// slipped past the `if (server)` guard before either resolved. A green suite that
+// passes BECAUSE of the race it should have caught.
+const servers = { shared: null, local: null };
+const ports = { shared: null, local: null };
 let getConfig = () => ({ token: null, folders: [] });
 
 function timingSafeEqualStr(a, b) {
@@ -51,6 +73,25 @@ function realOrNull(p) {
 // Resolves a requested path against the shared roots, or returns null.
 // Exported so it can be tested directly - this is the function that decides
 // whether the whole feature is a file share or a security hole.
+// LOCAL scope. Deliberately unrestricted: the user is sitting at this machine,
+// and Eddie's model is "everything on the PC locally, only shared_folders over
+// the web". Still not a free-for-all - the NUL check stays (a truncation trick
+// that turns "/etc/passwd\0.png" into a different path for different readers),
+// and the path must resolve and exist.
+function resolveLocal(requested) {
+  if (!requested || typeof requested !== 'string') return null;
+  if (requested.indexOf('\0') !== -1) return null;
+  const target = path.resolve(requested);
+  return realOrNull(target) || target;
+}
+
+// One entry point so a caller cannot pick the wrong resolver by accident. The
+// scope decides; there is no default that silently widens.
+function resolveForScope(requested, scope, folders) {
+  if (scope === 'local') return resolveLocal(requested);
+  return resolveShared(requested, folders);
+}
+
 function resolveShared(requested, folders) {
   if (!requested || typeof requested !== 'string') return null;
   if (requested.indexOf('\0') !== -1) return null;
@@ -118,6 +159,17 @@ function applyCors(req, res) {
   // though the bytes arrive correctly. That failure looks like a codec problem.
   res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
   res.setHeader('Access-Control-Max-Age', '600');
+  // PRIVATE NETWORK ACCESS. app.oswave.io is a PUBLIC origin; 127.0.0.1 is LOCAL
+  // address space. Chrome therefore classes this as a private-network request and
+  // sends a preflight carrying `Access-Control-Request-Private-Network: true`. If
+  // the response does not carry the matching allow header the request is BLOCKED -
+  // surfacing as a bare "TypeError: Failed to fetch", the exact same symptom as
+  // the missing CORS in v3.4.4. Second time this class of failure would have hit
+  // this feature, so it is answered here up front rather than debugged later.
+  // Only echoed when actually asked for, and only for an allowlisted origin.
+  if (String(req.headers['access-control-request-private-network']).toLowerCase() === 'true') {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  }
   // Deliberately NO Access-Control-Allow-Credentials. Auth here is a header,
   // never a cookie, so allowing credentials would widen exposure for nothing.
   return true;
@@ -189,7 +241,7 @@ function send(res, status, obj) {
   res.end(body);
 }
 
-function handle(req, res) {
+function handle(req, res, scope, getConfig) {
   const cfg = getConfig() || {};
   // Set via setHeader BEFORE any writeHead, because Node merges setHeader values
   // into writeHead. One call site therefore covers every response including the
@@ -225,7 +277,14 @@ function handle(req, res) {
   // Accepting only the device token, as v3.2.0 did, 401s every relayed request.
   const presented = req.headers['x-harbor-token']
     || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  const accepted = [cfg.token, cfg.relaySecret].filter(Boolean);
+  // CREDENTIALS ARE PER-SCOPE AND MUST NOT OVERLAP. The local token authorises the
+  // WHOLE DISK, so it is accepted ONLY by the local listener - which is never
+  // tunnelled. device_token and relay_secret authorise the shared scope only, so
+  // possession of a cloud credential can never widen into local access. This is
+  // the same "two credentials, opposite directions" split as the pairing design.
+  const accepted = scope === 'local'
+    ? [cfg.localToken].filter(Boolean)
+    : [cfg.token, cfg.relaySecret].filter(Boolean);
   // Compare against BOTH unconditionally rather than short-circuiting, so the
   // number of comparisons does not vary with which credential was presented.
   let authed = false;
@@ -269,8 +328,8 @@ function handle(req, res) {
   }
 
   if (route === '/list' || route === '/read-dir') {
-    const dir = resolveShared(url.searchParams.get('path'), cfg.folders);
-    if (!dir) return send(res, 403, { error: 'Path is not inside a shared folder' });
+    const dir = resolveForScope(url.searchParams.get('path'), scope, cfg.folders);
+    if (!dir) return send(res, 403, { error: scope === 'local' ? 'Path could not be resolved' : 'Path is not inside a shared folder' });
     let stat;
     try {
       stat = fs.statSync(dir);
@@ -297,8 +356,8 @@ function handle(req, res) {
   }
 
   if (route === '/stream') {
-    const file = resolveShared(url.searchParams.get('path'), cfg.folders);
-    if (!file) return send(res, 403, { error: 'Path is not inside a shared folder' });
+    const file = resolveForScope(url.searchParams.get('path'), scope, cfg.folders);
+    if (!file) return send(res, 403, { error: scope === 'local' ? 'Path could not be resolved' : 'Path is not inside a shared folder' });
     let stat;
     try {
       stat = fs.statSync(file);
@@ -347,36 +406,57 @@ function handle(req, res) {
   return send(res, 404, { error: 'Unknown route' });
 }
 
-function startFileServer(configFn, port = DEFAULT_PORT) {
-  if (server) return Promise.resolve({ ok: true, port: boundPort, already: true });
+function startFileServer(configFn, port = DEFAULT_PORT, scope = 'shared') {
+  if (scope !== 'shared' && scope !== 'local') {
+    return Promise.resolve({ ok: false, error: 'Unknown scope: ' + scope });
+  }
+  // Guard PER SCOPE. A shared server already running must not make the local one
+  // silently no-op and report the wrong port back, which is what the single
+  // `if (server)` check did.
+  if (servers[scope]) return Promise.resolve({ ok: true, port: ports[scope], already: true });
   getConfig = configFn;
   return new Promise((resolve) => {
-    const s = http.createServer(handle);
+    const s = http.createServer((req, res) => handle(req, res, scope, configFn));
     s.on('error', (e) => {
-      server = null; boundPort = null;
+      servers[scope] = null; ports[scope] = null;
       resolve({ ok: false, error: e.message });
     });
     // 127.0.0.1 ONLY. Nothing off-machine can reach this until a transport is
     // deliberately pointed at it, and even then the token gate still applies.
     s.listen(port, '127.0.0.1', () => {
-      server = s; boundPort = port;
-      resolve({ ok: true, port });
+      servers[scope] = s; ports[scope] = port;
+      resolve({ ok: true, port, scope });
     });
   });
 }
 
-function stopFileServer() {
-  if (!server) return { ok: true, already: true };
-  try { server.close(); } catch (e) { /* closing an already-dead server is fine */ }
-  server = null; boundPort = null;
-  return { ok: true };
+// Defaults to stopping BOTH, preserving the behaviour of the existing no-arg
+// caller, which shuts the feature down rather than one socket of it.
+function stopFileServer(scope) {
+  const targets = scope ? [scope] : ['shared', 'local'];
+  let stopped = 0;
+  for (const sc of targets) {
+    if (!servers[sc]) continue;
+    try { servers[sc].close(); } catch (e) { /* already-dead is fine */ }
+    servers[sc] = null; ports[sc] = null;
+    stopped++;
+  }
+  return { ok: true, stopped, already: stopped === 0 };
 }
 
+// Reports the SHARED server, deliberately and by default. Every existing caller
+// feeds this into startFileTunnel, so "status" must mean the tunnellable one -
+// making the safe answer the default rather than something a caller has to
+// remember to ask for.
 function fileServerStatus() {
-  return { running: !!server, port: boundPort };
+  return { running: !!servers.shared, port: ports.shared, scope: 'shared' };
+}
+
+function localServerStatus() {
+  return { running: !!servers.local, port: ports.local, scope: 'local' };
 }
 
 module.exports = {
   startFileServer, stopFileServer, fileServerStatus, resolveShared, isInside, DEFAULT_PORT,
-  contentTypeFor,
+  contentTypeFor, resolveLocal, resolveForScope, LOCAL_PORT, localServerStatus,
 };

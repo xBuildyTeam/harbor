@@ -79,6 +79,12 @@ const harborBridgeFS = {
   listDrives:   ()                    => ipcRenderer.invoke('fs:list-drives'),
   readDir:      (path)                => ipcRenderer.invoke('fs:read-dir', path),
   readFile:     (path)                => ipcRenderer.invoke('fs:read-file', path),
+  // readFile is utf-8 only. readFileBytes is the byte channel that was missing -
+  // the reason text opened on the local drive and audio, images and video did not.
+  readFileBytes:(path)                => ipcRenderer.invoke('fs:read-file-bytes', path),
+  // For large media: a real loopback HTTP endpoint supporting Range, so a player
+  // can seek instead of buffering the whole file into the tab.
+  getLocalEndpoint: ()                => ipcRenderer.invoke('local:endpoint'),
   writeFile:    (path, content)       => ipcRenderer.invoke('fs:write-file', path, content),
   createFolder: (path)                => ipcRenderer.invoke('fs:create-folder', path),
   rename:       (oldPath, newPath)    => ipcRenderer.invoke('fs:rename', oldPath, newPath),

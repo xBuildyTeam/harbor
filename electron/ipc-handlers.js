@@ -39,6 +39,14 @@ const SETTINGS_SCHEMA = {
 
 const SETTINGS_KEYS = Object.keys(SETTINGS_SCHEMA);
 
+// LOCAL-SCOPE CREDENTIAL. Minted fresh every launch, held ONLY in memory, and
+// never written to settings, never sent to Wave OS's backend, never published on
+// the device row. That is deliberate: this token authorises the WHOLE DISK, so it
+// must not be persistable, stealable from a settings file, or reachable by anyone
+// who compromises the cloud side. It is handed out over the in-process preload
+// bridge alone, which means only a page THIS APP loaded can ever obtain it.
+const LOCAL_TOKEN = crypto.randomBytes(32).toString('hex');
+
 function getSettingsData() {
   let raw = {};
   try {
@@ -237,7 +245,16 @@ function registerIpcHandlers({
 
   function startHeartbeat() {
     if (heartbeatTimer) return;
-    fileserver.startFileServer(fileServerConfig).then(async (r) => {
+    // TWO LISTENERS. The local one is started here and is NEVER handed to
+  // startFileTunnel below - that call receives only the SHARED server's port.
+  // That wiring fact is the entire boundary between "files I share" and "my whole
+  // disk", so it is stated rather than left to be inferred.
+  fileserver.startFileServer(fileServerConfig, fileserver.LOCAL_PORT, 'local').then((lr) => {
+    if (!lr.ok) console.error('[harbor] LOCAL file server failed to bind:', lr.error);
+    else console.log('[harbor] local-scope file server on 127.0.0.1:' + lr.port + ' (never tunnelled)');
+  });
+
+  fileserver.startFileServer(fileServerConfig).then(async (r) => {
       if (!r.ok) {
         console.error('[harbor] file server failed to bind:', r.error);
         return;
@@ -382,6 +399,40 @@ function registerIpcHandlers({
     saveSettingsData({ sharedFolders: folders });
     await sendHeartbeat(true);
     return { ok: true, folders };
+  });
+
+  // Endpoint for the LOCAL scope. Returns the loopback URL plus the in-memory
+  // token so the page can issue real HTTP range requests against any local file -
+  // which is what a media player needs and what the old file:// fallback could
+  // never provide. Only reachable over the preload bridge.
+  ipcMain.handle('local:endpoint', async () => {
+    const srv = fileserver.fileServerStatus();
+    return {
+      url: 'http://127.0.0.1:' + fileserver.LOCAL_PORT,
+      token: LOCAL_TOKEN,
+      scope: 'local',
+      sharedRunning: !!(srv && srv.running),
+    };
+  });
+
+  // Byte channel over IPC, for callers that just want the bytes and do not need
+  // range requests. The existing fs:read-file is utf-8 ONLY, which is exactly why
+  // text files opened on the local drive and media did not: a decoded string
+  // cannot carry an mp3. Returns a Buffer, which Electron delivers to the renderer
+  // as a Uint8Array, so the page can build a correctly-typed Blob.
+  // Capped, because this copies the whole file through IPC into the renderer -
+  // anything larger should use local:endpoint and stream it with Range instead.
+  ipcMain.handle('fs:read-file-bytes', async (event, filePath) => {
+    if (isPathBlocked(filePath)) return { error: 'Access denied: system directory' };
+    try {
+      const stat = await fsPromises.stat(filePath);
+      if (!stat.isFile()) return { error: 'Not a file' };
+      if (stat.size > 100 * 1024 * 1024) {
+        return { error: 'File too large for the IPC byte channel', size: stat.size, useEndpoint: true };
+      }
+      const bytes = await fsPromises.readFile(filePath);
+      return { bytes, size: stat.size, name: path.basename(filePath) };
+    } catch (e) { return { error: e.message }; }
   });
 
   // --- Settings & Conversation Handlers ---
