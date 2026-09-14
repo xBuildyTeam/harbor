@@ -1,6 +1,6 @@
 {
   "name": "harbor",
-  "version": "3.4.4",
+  "version": "3.4.5",
   "description": "Harbor \u2014 secure local file access and local AI for Wave OS",
   "main": "electron/main.js",
   "scripts": {

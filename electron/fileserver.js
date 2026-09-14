@@ -123,6 +123,66 @@ function applyCors(req, res) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Content-Type by extension. Until v3.4.5 EVERY file streamed as
+// application/octet-stream - a PNG, an mp4 and a .txt were indistinguishable to
+// the caller. That breaks a viewer in two independent ways: a Blob built from the
+// response carries the wrong type so an <img>/<video> refuses to decode it, and
+// any client that switches on Content-Type to choose a renderer cannot tell an
+// image from a binary. Measured 2026-09-14: /stream returned byte-perfect
+// content with correct 200/206/Content-Range and still octet-stream for a PNG.
+const MIME = {
+  // images
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
+  heic: 'image/heic', tif: 'image/tiff', tiff: 'image/tiff',
+  // video
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+  mkv: 'video/x-matroska', avi: 'video/x-msvideo', m4v: 'video/mp4',
+  // audio
+  mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac',
+  m4a: 'audio/mp4', aac: 'audio/aac', opus: 'audio/opus',
+  // documents
+  pdf: 'application/pdf',
+  // text and code - charset matters or accented characters mojibake
+  txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8',
+  log: 'text/plain; charset=utf-8', ini: 'text/plain; charset=utf-8',
+  cfg: 'text/plain; charset=utf-8', env: 'text/plain; charset=utf-8',
+  csv: 'text/csv; charset=utf-8', json: 'application/json; charset=utf-8',
+  js: 'text/plain; charset=utf-8', mjs: 'text/plain; charset=utf-8',
+  cjs: 'text/plain; charset=utf-8', ts: 'text/plain; charset=utf-8',
+  jsx: 'text/plain; charset=utf-8', tsx: 'text/plain; charset=utf-8',
+  css: 'text/plain; charset=utf-8', py: 'text/plain; charset=utf-8',
+  sh: 'text/plain; charset=utf-8', rs: 'text/plain; charset=utf-8',
+  go: 'text/plain; charset=utf-8', java: 'text/plain; charset=utf-8',
+  c: 'text/plain; charset=utf-8', h: 'text/plain; charset=utf-8',
+  cpp: 'text/plain; charset=utf-8', sol: 'text/plain; charset=utf-8',
+  yml: 'text/plain; charset=utf-8', yaml: 'text/plain; charset=utf-8',
+  toml: 'text/plain; charset=utf-8', sql: 'text/plain; charset=utf-8',
+  // archives
+  zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar',
+  '7z': 'application/x-7z-compressed', rar: 'application/vnd.rar',
+};
+
+// DELIBERATELY SERVED AS text/plain, NOT their real type. An HTML or SVG file
+// sitting in a shared folder is untrusted input: served as text/html or
+// image/svg+xml the browser EXECUTES its script. The tunnel is a different
+// origin from Wave OS so it cannot touch the app's session, and the bearer token
+// lives in a header rather than a cookie so a script there has nothing to steal
+// - but "the blast radius happens to be small" is not a reason to hand a file
+// out of someone's home directory an execution context. Cost of this choice: an
+// .svg will not render as an image, it will show as source. Reversible if that
+// ever matters more than the guarantee.
+const NEVER_EXECUTE = new Set(['html', 'htm', 'xhtml', 'svg', 'xml', 'xsl', 'mhtml']);
+
+function contentTypeFor(file) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(file);
+  if (!m) return 'application/octet-stream';
+  const ext = m[1].toLowerCase();
+  if (NEVER_EXECUTE.has(ext)) return 'text/plain; charset=utf-8';
+  return MIME[ext] || 'application/octet-stream';
+}
+
 function send(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
@@ -262,19 +322,23 @@ function handle(req, res) {
         }
         end = Math.min(end, stat.size - 1);
         res.writeHead(206, {
-          'Content-Type': 'application/octet-stream',
+          'Content-Type': contentTypeFor(file),
           'Content-Length': end - start + 1,
           'Content-Range': `bytes ${start}-${end}/${stat.size}`,
           'Accept-Ranges': 'bytes',
+          // nosniff so the browser cannot second-guess the type above and
+          // execute something NEVER_EXECUTE deliberately downgraded.
+          'X-Content-Type-Options': 'nosniff',
         });
         if (req.method === 'HEAD') return res.end();
         return fs.createReadStream(file, { start, end }).pipe(res);
       }
     }
     res.writeHead(200, {
-      'Content-Type': 'application/octet-stream',
+      'Content-Type': contentTypeFor(file),
       'Content-Length': stat.size,
       'Accept-Ranges': 'bytes',
+      'X-Content-Type-Options': 'nosniff',
     });
     if (req.method === 'HEAD') return res.end();
     return fs.createReadStream(file).pipe(res);
@@ -314,4 +378,5 @@ function fileServerStatus() {
 
 module.exports = {
   startFileServer, stopFileServer, fileServerStatus, resolveShared, isInside, DEFAULT_PORT,
+  contentTypeFor,
 };
