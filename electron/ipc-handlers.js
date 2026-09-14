@@ -202,10 +202,23 @@ function registerIpcHandlers({
       // null when remote access is off, which is the honest value - the relay
       // then reports the device unreachable instead of dialling a dead host.
       tunnel_url: filetunnel.getUrl() || null,
+      // is_sharing is what Wave OS's Harbor tab gates its folder view on, and
+      // NOTHING has ever set it - it has been false on every row since the row
+      // was minted. So a device could be paired, online, tunnelled, with a
+      // populated shared_folders array, and still render "Not sharing - Start
+      // sharing from Harbor Agent on your PC". Measured on xBuildy 2026-09-14
+      // with tunnel_url live and connection_mode 'relay' and is_sharing false.
+      //
+      // Semantics deliberately narrow: this means "folders are shared", matching
+      // the field name and Wave OS's own copy. Reachability is a SEPARATE axis
+      // already carried by tunnel_url and connection_mode, which is what the
+      // Online/Offline badge reads. Conflating them would make one flag answer
+      // two questions.
+      is_sharing: folders.length > 0,
       // connection_mode has sat at 'pending' on every row since pairing shipped
       // because nothing ever set it, and it may be what Wave OS's Harbor tab
-      // reads for its offline banner. UNVERIFIED that the backend accepts this
-      // key - confirm by reading the row back, never by trusting ok: true.
+      // reads for its offline banner. VERIFIED 2026-09-14: the row read back as
+      // connection_mode 'relay', and Wave OS's badge flipped Offline -> Online.
       connection_mode: filetunnel.getUrl() ? 'relay' : 'pending',
     });
   }
