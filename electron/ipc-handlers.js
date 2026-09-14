@@ -202,6 +202,11 @@ function registerIpcHandlers({
       // null when remote access is off, which is the honest value - the relay
       // then reports the device unreachable instead of dialling a dead host.
       tunnel_url: filetunnel.getUrl() || null,
+      // connection_mode has sat at 'pending' on every row since pairing shipped
+      // because nothing ever set it, and it may be what Wave OS's Harbor tab
+      // reads for its offline banner. UNVERIFIED that the backend accepts this
+      // key - confirm by reading the row back, never by trusting ok: true.
+      connection_mode: filetunnel.getUrl() ? 'relay' : 'pending',
     });
   }
 
@@ -219,8 +224,30 @@ function registerIpcHandlers({
 
   function startHeartbeat() {
     if (heartbeatTimer) return;
-    fileserver.startFileServer(fileServerConfig).then((r) => {
-      if (!r.ok) console.error('[harbor] file server failed to bind:', r.error);
+    fileserver.startFileServer(fileServerConfig).then(async (r) => {
+      if (!r.ok) {
+        console.error('[harbor] file server failed to bind:', r.error);
+        return;
+      }
+      // THE FIX. startFileTunnel was previously called from exactly ONE place -
+      // the toggle - so remoteAccessEnabled persisted as true across a restart
+      // while nothing ever restarted the tunnel. The file server auto-started
+      // and the heartbeat auto-started; the tunnel did not. Result: a paired,
+      // online, heartbeating device that published tunnel_url: null forever, so
+      // the relay had no address and Wave OS showed the PC offline with no
+      // folders. Measured on xBuildy 2026-09-14.
+      const st = getSettingsData();
+      if (st.remoteAccessEnabled !== true) return;
+      const res = await filetunnel.startFileTunnel(r.port);
+      if (res && res.ok) {
+        console.log('[harbor] remote access resumed at launch');
+      } else {
+        console.error('[harbor] remote access could not resume:', res && res.error);
+      }
+      // Armed either way: a tunnel that failed at boot because the network was
+      // not up yet is the normal case on a cold start, not a permanent failure.
+      filetunnel.armWatchdog(r.port, () => sendHeartbeat(true));
+      await sendHeartbeat(true);
     });
     sendHeartbeat(true);
     heartbeatTimer = setInterval(() => sendHeartbeat(true), 30000);
@@ -272,6 +299,10 @@ function registerIpcHandlers({
       enabled: st.remoteAccessEnabled === true,
       url: filetunnel.getUrl(),
       running: filetunnel.isRunning(),
+      // Reported separately so the dock can never again invent "starting" for
+      // something that is not starting.
+      starting: filetunnel.isStarting(),
+      gaveUp: filetunnel.gaveUp(),
       paired: !!st.deviceToken,
     };
   });
@@ -280,6 +311,7 @@ function registerIpcHandlers({
     const want = enabled === true;
     saveSettingsData({ remoteAccessEnabled: want });
     if (!want) {
+      filetunnel.disarmWatchdog();
       filetunnel.stopFileTunnel();
       await sendHeartbeat(true); // republish immediately with tunnel_url: null
       return { ok: true, enabled: false, url: null };
@@ -291,6 +323,7 @@ function registerIpcHandlers({
       saveSettingsData({ remoteAccessEnabled: false });
       return { ok: false, error: res.error, needsInstall: !!res.needsInstall };
     }
+    filetunnel.armWatchdog(srv.port, () => sendHeartbeat(true));
     await sendHeartbeat(true); // publish the new hostname without waiting 30s
     return { ok: true, enabled: true, url: res.url };
   });

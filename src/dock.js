@@ -438,9 +438,17 @@ document.addEventListener('DOMContentLoaded', () => {
       if (st.enabled && st.url) {
         remoteText.textContent = 'On';
         remoteText.title = st.url;
-      } else if (st.enabled) {
+      } else if (st.enabled && st.starting) {
         remoteText.textContent = 'On (starting…)';
         remoteText.title = 'Waiting for the tunnel to report a URL';
+      } else if (st.enabled && st.gaveUp) {
+        // Say the true thing. "starting..." for a process that is not starting
+        // sent a real debugging session down the wrong path.
+        remoteText.textContent = 'On — tunnel down';
+        remoteText.title = 'Retries exhausted. Click to turn off and on again.';
+      } else if (st.enabled) {
+        remoteText.textContent = 'On (reconnecting…)';
+        remoteText.title = 'Remote access is on but the tunnel is not up yet';
       } else {
         remoteText.textContent = 'Off — files stay on this PC';
         remoteText.title = 'Click to allow Wave OS to reach this PC from anywhere';

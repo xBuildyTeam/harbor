@@ -26,6 +26,15 @@ function isRunning() {
   return !!proc && !!publicUrl;
 }
 
+// The dock must be able to tell "a start is in flight" from "nothing is
+// starting". v3.3.0-v3.4.1 could not: remoteAccessEnabled persisted as true
+// while nothing restarted the tunnel after a relaunch, so the dock rendered
+// "On (starting...)" forever for a process that did not exist. A UI state that
+// cannot be distinguished from a stalled one is a lie the UI tells.
+function isStarting() {
+  return starting;
+}
+
 // Quick tunnels hand out a RANDOM hostname every start, so this value is not
 // stable across restarts. That is fine here only because the heartbeat
 // republishes it every 30s - Wave OS always learns the current one within a
@@ -110,7 +119,48 @@ function startWithBinary(resolvedPath, port, timeoutMs) {
   });
 }
 
+// BOUNDED, never infinite. Quick tunnels do drop, and a dead tunnel that never
+// comes back means Wave OS silently loses the device until someone notices a
+// toggle. But an unbounded retry against a missing binary or a blocked network
+// is just a hot loop, so this gives up after a few tries and says so.
+const RETRY_DELAYS_MS = [5000, 15000, 45000];
+let watchdogTimer = null;
+let retryIndex = 0;
+let watchPort = null;
+let onWatchdogEvent = null;
+
+function armWatchdog(port, notify) {
+  watchPort = port;
+  if (notify) onWatchdogEvent = notify;
+  if (watchdogTimer) return;
+  watchdogTimer = setInterval(async () => {
+    // Only act when the tunnel is DOWN and no start is already in flight.
+    if (proc || starting) { retryIndex = 0; return; }
+    if (retryIndex >= RETRY_DELAYS_MS.length) return; // gave up, stay quiet
+    const delay = RETRY_DELAYS_MS[retryIndex];
+    retryIndex += 1;
+    await new Promise((r) => setTimeout(r, delay));
+    if (proc || starting) return;
+    const res = await startFileTunnel(watchPort);
+    if (res && res.ok) {
+      retryIndex = 0;
+      if (onWatchdogEvent) onWatchdogEvent(res.url);
+    }
+  }, 20000);
+}
+
+function disarmWatchdog() {
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  retryIndex = 0;
+  watchPort = null;
+}
+
+function gaveUp() {
+  return retryIndex >= RETRY_DELAYS_MS.length && !proc && !starting;
+}
+
 function stopFileTunnel() {
+  disarmWatchdog();
   if (!proc) { publicUrl = null; return { ok: true, already: true }; }
   try { proc.kill(); } catch (e) { /* already dead is the desired state */ }
   proc = null;
@@ -118,4 +168,4 @@ function stopFileTunnel() {
   return { ok: true };
 }
 
-module.exports = { startFileTunnel, stopFileTunnel, getUrl, isRunning };
+module.exports = { startFileTunnel, stopFileTunnel, getUrl, isRunning, isStarting, armWatchdog, disarmWatchdog, gaveUp };
