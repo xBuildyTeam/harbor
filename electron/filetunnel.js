@@ -17,6 +17,16 @@ const URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
 let proc = null;
 let publicUrl = null;
 let starting = false;
+let startedAt = 0;
+// GENERATION COUNTER, because "stop" had no way to cancel a start already in
+// flight. stopFileTunnel() early-returns on `!proc`, which is EXACTLY the state
+// during a start - so it reported {ok:true} while the pending start went on to
+// assign proc and publish a public URL. The user turned sharing OFF and the PC
+// got published anyway, with the dock reading Off. That is a privacy defect, not
+// a cosmetic one. Every stop now invalidates the generation, and a start that
+// completes against a stale generation kills its own child instead of publishing.
+let generation = 0;
+const STALE_START_MS = 90 * 1000;
 
 function getUrl() {
   return publicUrl;
@@ -32,6 +42,16 @@ function isRunning() {
 // "On (starting...)" forever for a process that did not exist. A UI state that
 // cannot be distinguished from a stalled one is a lie the UI tells.
 function isStarting() {
+  // STALE-START GUARD. A start that never calls done() would otherwise pin this
+  // true forever, and the flag gates retries and the watchdog as well as the
+  // label. Bounded by the start timeout plus a wide margin, so a genuinely slow
+  // tunnel is never cut off - this only fires when a start has plainly abandoned
+  // its own promise.
+  if (starting && startedAt && Date.now() - startedAt > STALE_START_MS) {
+    console.error('[harbor] a tunnel start exceeded ' + STALE_START_MS + 'ms without settling; clearing the starting flag');
+    starting = false;
+    startedAt = 0;
+  }
   return starting;
 }
 
@@ -54,8 +74,10 @@ function startFileTunnel(port, timeoutMs = 30000) {
     return Promise.resolve({ ok: false, error: msg, refusedByDesign: true });
   }
   if (proc && publicUrl) return Promise.resolve({ ok: true, url: publicUrl, already: true });
-  if (starting) return Promise.resolve({ ok: false, error: 'Already starting' });
+  if (isStarting()) return Promise.resolve({ ok: false, error: 'Already starting' });
   starting = true;
+  startedAt = Date.now();
+  const myGen = ++generation;
 
   return cfbin.resolveBinary().then((bin) => {
     if (!bin.found) {
@@ -71,17 +93,39 @@ function startFileTunnel(port, timeoutMs = 30000) {
           : 'Cloudflare Tunnel is not installed',
       };
     }
-    return startWithBinary(bin.path, port, timeoutMs);
+    return startWithBinary(bin.path, port, timeoutMs, myGen);
+  }).catch((err) => {
+    // WITHOUT THIS CATCH A SINGLE REJECTION WEDGED THE WHOLE SUBSYSTEM. `starting`
+    // was cleared only inside .then, so a rejected resolveBinary() left it true
+    // forever - and `starting` gates far more than a label: it makes every future
+    // start return "Already starting" (line above), it disables the reconnect
+    // watchdog, and it forces gaveUp() to false. So one throw meant no tunnel
+    // until an app restart, while the dock displayed a reassuring "On
+    // (starting...)". Exactly the failure shape v3.4.2 existed to remove, entering
+    // through a different door. resolveBinary's helpers are resolve-only today, so
+    // this was latent rather than live - which is precisely when it is cheap.
+    starting = false;
+    return { ok: false, error: `Could not check for the tunnel binary: ${err && err.message}` };
   });
 }
 
-function startWithBinary(resolvedPath, port, timeoutMs) {
+function startWithBinary(resolvedPath, port, timeoutMs, myGen) {
   return new Promise((resolve) => {
     let settled = false;
     const done = (result) => {
       if (settled) return;
       settled = true;
       starting = false;
+      // STALE GENERATION = THE USER ASKED US TO STOP WHILE THIS WAS STARTING.
+      // Publishing now would expose the machine after an explicit refusal, so the
+      // child is killed and no URL is recorded. Reported honestly as cancelled
+      // rather than as a failure, because nothing went wrong.
+      if (myGen !== generation) {
+        try { if (child) child.kill(); } catch (e) { /* already gone is fine */ }
+        if (proc === child) proc = null;
+        publicUrl = null;
+        return resolve({ ok: false, cancelled: true, error: 'Cancelled - remote access was turned off while the tunnel was starting' });
+      }
       resolve(result);
     };
 
@@ -174,6 +218,13 @@ function gaveUp() {
 
 function stopFileTunnel() {
   disarmWatchdog();
+  // INVALIDATE FIRST, AND BEFORE THE EARLY RETURN. Both lines have to run even
+  // when there is no process yet, because "no process yet" is the in-flight-start
+  // case this is here to cancel. v3.4.2-v3.6.0 returned {ok:true, already:true}
+  // from below without touching either, so the pending start survived the stop.
+  generation++;
+  starting = false;
+  startedAt = 0;
   if (!proc) { publicUrl = null; return { ok: true, already: true }; }
   try { proc.kill(); } catch (e) { /* already dead is the desired state */ }
   proc = null;

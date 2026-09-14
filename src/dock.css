@@ -541,3 +541,38 @@ html, body {
   align-items: center;
   gap: 2px;
 }
+
+/* --- Help modal ------------------------------------------------------------
+   Taller box with an internal scroll: the dock window is short, and the whole
+   point of this panel is that it can be read without hunting. */
+.help-box { max-width: 460px; width: 92vw; }
+.help-scroll {
+  max-height: 58vh;
+  overflow-y: auto;
+  padding-right: 4px;
+  margin: 4px 0 10px;
+}
+.help-card {
+  background: var(--card, rgba(255,255,255,0.03));
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.help-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 5px;
+}
+.help-card p {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted, #9aa4b2);
+}
+.help-card p:last-child { margin-bottom: 0; }
+.help-note {
+  border-left: 2px solid var(--accent, #2dd4a7);
+  padding-left: 8px;
+}
+#browser-access-card .card-btn { font-size: 10px; padding: 3px 8px; }

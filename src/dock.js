@@ -42,6 +42,19 @@ function applyMasks() {
 // than one region lives out here.
 let grantCountdownTimer = null;
 
+// MODULE SCOPE, same reason as the grant helpers: reachable from the settings
+// modal, the Browser access card, and the dock body.
+function openHelpModal() {
+  const m = document.getElementById('help-modal');
+  const s2 = document.getElementById('settings-modal');
+  if (s2) s2.classList.remove('show');
+  if (m) m.classList.add('show');
+}
+function closeHelpModal() {
+  const m = document.getElementById('help-modal');
+  if (m) m.classList.remove('show');
+}
+
 function stopGrantCountdown() {
   if (grantCountdownTimer) { clearInterval(grantCountdownTimer); grantCountdownTimer = null; }
 }
@@ -75,6 +88,8 @@ async function refreshGrants() {
   if (!row || !textEl || !window.electronAPI || !window.electronAPI.listLocalGrants) return;
   const res = await window.electronAPI.listLocalGrants();
   const list = (res && res.grants) || [];
+  const dot = document.getElementById('browser-access-dot');
+  if (dot) dot.style.background = list.length ? 'var(--accent, #2dd4a7)' : 'var(--muted, #6b7280)';
   if (!list.length) {
     textEl.textContent = 'None';
     textEl.title = 'No browser has been given local access';
@@ -114,6 +129,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   refreshGrants();
+
+  // Help, reachable from two places: the Settings modal (as asked) and directly
+  // from the Browser access card, which is where the question actually occurs.
+  const btnHelpOpen = document.getElementById('btn-help-open');
+  const btnHelpClose = document.getElementById('btn-help-close');
+  const btnBrowserHelp = document.getElementById('btn-browser-help');
+  if (btnHelpOpen) btnHelpOpen.addEventListener('click', openHelpModal);
+  if (btnBrowserHelp) btnBrowserHelp.addEventListener('click', openHelpModal);
+  if (btnHelpClose) btnHelpClose.addEventListener('click', closeHelpModal);
+  const helpOverlay = document.getElementById('help-modal');
+  if (helpOverlay) {
+    helpOverlay.addEventListener('click', (e) => { if (e.target === helpOverlay) closeHelpModal(); });
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHelpModal(); });
+
+  // The Browser access card is always visible, and its dot reflects whether any
+  // browser currently holds access.
+  const bac = document.getElementById('browser-access-card');
+  if (bac) bac.style.display = '';
 
 
   // Elements
