@@ -74,6 +74,55 @@ function resolveShared(requested, folders) {
   return real || target;
 }
 
+// ---------------------------------------------------------------------------
+// CORS. Wave OS fetches this server DIRECTLY FROM THE BROWSER, cross-origin, so
+// without these headers every authorised request dies as a bare
+// `TypeError: Failed to fetch` with no way to tell it from the network being
+// down. Measured against the live tunnel 2026-09-14: zero
+// Access-Control-Allow-Origin on any response, and the preflight answered 405.
+//
+// NOT '*'. This server is reachable from the open internet whenever the tunnel
+// is on, and it serves a folder out of somebody's home directory. An allowlist
+// means a hostile page cannot even attempt to replay a token from the user's own
+// browser, which the bearer check alone does not prevent.
+const ALLOWED_ORIGIN_SUFFIXES = ['oswave.io', 'base44.app', 'base44.com'];
+
+function originAllowed(origin) {
+  if (!origin) return false;
+  let host;
+  try { host = new URL(origin).hostname; } catch (e) { return false; }
+  if (host === 'localhost' || host === '127.0.0.1') return true; // local dev
+  // Suffix match must be on a DOT boundary. Plain endsWith('oswave.io') would
+  // also accept 'notoswave.io', which is the classic allowlist bypass.
+  return ALLOWED_ORIGIN_SUFFIXES.some((sfx) => host === sfx || host.endsWith('.' + sfx));
+}
+
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  // Vary unconditionally, allowed or not: the response genuinely differs by
+  // Origin, and a cache that misses that hands the wrong Allow-Origin to the
+  // next caller.
+  res.setHeader('Vary', 'Origin');
+  if (!originAllowed(origin)) {
+    // Logged so a future "Failed to fetch" can be read off the console instead
+    // of guessed at. A silent refusal here is indistinguishable from a network
+    // fault at the caller, which is the whole failure this fix exists to end.
+    if (origin) console.warn('[harbor] CORS refused origin:', origin);
+    return false;
+  }
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, X-Harbor-Token, Content-Type, Range');
+  // Expose-Headers matters for media: without it a player cannot read
+  // Content-Length or Content-Range off the response, so SEEKING BREAKS even
+  // though the bytes arrive correctly. That failure looks like a codec problem.
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+  res.setHeader('Access-Control-Max-Age', '600');
+  // Deliberately NO Access-Control-Allow-Credentials. Auth here is a header,
+  // never a cookie, so allowing credentials would widen exposure for nothing.
+  return true;
+}
+
 function send(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
@@ -82,6 +131,26 @@ function send(res, status, obj) {
 
 function handle(req, res) {
   const cfg = getConfig() || {};
+  // Set via setHeader BEFORE any writeHead, because Node merges setHeader values
+  // into writeHead. One call site therefore covers every response including the
+  // 401, the 403, the 404, the 206 and the 416 - and the error responses are the
+  // ones that MUST carry it. Without CORS on a 401 the browser masks the auth
+  // failure as "Failed to fetch", so "wrong token" and "server unreachable"
+  // become the same message. Same family of bug as the dock reporting
+  // "On (starting...)" for a process that did not exist.
+  applyCors(req, res);
+
+  // A PREFLIGHT IS NOT A WRITE. The read-only guard below answered OPTIONS with
+  // 405 "Read-only server", and since browsers send the preflight before any
+  // cross-origin request carrying an Authorization header, that single line
+  // turned every correct, authorised, fully-scoped request into
+  // "Failed to fetch". It must also be answered BEFORE the token check, because
+  // browsers deliberately do not send credentials on a preflight.
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     return send(res, 405, { error: 'Read-only server' });
   }
