@@ -1,3 +1,35 @@
+// ---------------------------------------------------------------------------
+// PRIVACY MASK - deliberately at MODULE scope.
+//
+// dock.js has TWO independent top-level scopes: the DOMContentLoaded callback
+// and the separate initPairing IIFE. v3.4.0 declared these inside the first and
+// called them from the second, which is a ReferenceError - and one that hid
+// itself, because initPairing's refresh() wraps its whole success path in a
+// single try/catch. The throw was swallowed and relabelled "Status unavailable"
+// on a device that was correctly paired, and it aborted the chain before
+// refreshRemote() ran, so the Remote access row never appeared and the file
+// tunnel could not be switched on at all. Measured on xBuildy 2026-09-14.
+//
+// Anything both scopes need lives HERE, and resolves its own DOM nodes rather
+// than closing over consts that only exist in one of them.
+// ---------------------------------------------------------------------------
+let revealLocal = false;
+
+function setMasked(el, sensitive) {
+  if (!el) return;
+  if (sensitive && !revealLocal) el.classList.add('masked');
+  else el.classList.remove('masked');
+}
+
+function applyMasks() {
+  // Only mask values that actually carry an address. Blurring the word
+  // "Inactive" or "Stopped" would just look broken.
+  const tEl = document.getElementById('tunnel-url-text');
+  setMasked(tEl, !!tEl && !!tEl.getAttribute('data-url'));
+  const fsEl = document.getElementById('fileserver-status-text');
+  setMasked(fsEl, !!fsEl && /\d/.test(fsEl.textContent || ''));
+}
+
 /**
  * Harbor Renderer - Dock Widget Logic
  */
@@ -21,27 +53,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnToggleTunnel = document.getElementById('btn-toggle-tunnel');
   const tunnelUrlText = document.getElementById('tunnel-url-text');
 
-  // PRIVACY MASK. Default is hidden, and that default matters more than the
-  // toggle: the failure this prevents is starting a screen recording without
-  // remembering to hide anything. Two values qualify - the local file-server
-  // address, and the public tunnel hostname. The tunnel hostname is the
-  // genuinely sensitive one, since it is reachable from anywhere, so masking the
-  // localhost line and leaving that visible would have been security theatre.
-  let revealLocal = false;
-
-  function setMasked(el, sensitive) {
-    if (!el) return;
-    if (sensitive && !revealLocal) el.classList.add('masked');
-    else el.classList.remove('masked');
-  }
-
-  function applyMasks() {
-    // Only mask values that actually carry an address. Blurring the word
-    // "Inactive" would just look broken.
-    setMasked(tunnelUrlText, !!tunnelUrlText && !!tunnelUrlText.getAttribute('data-url'));
-    const fsEl = document.getElementById('fileserver-status-text');
-    setMasked(fsEl, !!fsEl && /\d/.test(fsEl.textContent || ''));
-  }
 
   const btnChat = document.getElementById('btn-chat');
   const btnSettings = document.getElementById('btn-settings');
@@ -485,6 +496,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // this, with the file server running fine the entire time.
     async function refreshTunnelBinary() {
       if (!api.getTunnelBinStatus) return null;
+      // Resolved here, not closed over: these nodes belong to the other
+      // top-level scope. This is the exact mistake v3.4.0 shipped.
+      const btnToggleTunnel = document.getElementById('btn-toggle-tunnel');
+      const tunnelUrlText = document.getElementById('tunnel-url-text');
+      if (!btnToggleTunnel || !tunnelUrlText) return null;
       let bin = null;
       try { bin = await api.getTunnelBinStatus(); } catch (e) { return null; }
       if (!bin) return null;
@@ -543,17 +559,39 @@ document.addEventListener('DOMContentLoaded', () => {
         : 'Click to share a folder';
     }
 
-    async function refresh() {
+    // Each sub-refresh is isolated. Previously all four shared one try/catch, so
+    // ONE failure in the last cosmetic widget overwrote a correct "Paired as
+    // xBuildy" with "Status unavailable" and skipped everything after it. The
+    // pairing status is authoritative and must not be destroyed by a row that
+    // merely failed to render.
+    async function settle(label, fn) {
       try {
-        const st = await api.getPairingStatus();
+        await fn();
+      } catch (e) {
+        console.error(`[dock] ${label} failed:`, e && e.stack ? e.stack : e);
+      }
+    }
+
+    async function refresh() {
+      let st = null;
+      try {
+        st = await api.getPairingStatus();
+      } catch (e) {
+        console.error('[dock] getPairingStatus failed:', e);
+        // ONLY a genuine failure of the pairing query earns this label.
+        statusText.textContent = 'Status unavailable';
+        dot.className = 'status-dot offline';
+        return;
+      }
+      try {
         if (st && st.paired) {
           dot.className = 'status-dot online';
           statusText.textContent = `Paired as ${st.deviceName}`;
           btn.textContent = 'Unpair';
           if (foldersRow) foldersRow.style.display = 'flex';
-          await refreshFolders();
-          await refreshFileServer();
-          await refreshRemote();
+          await settle('refreshFolders', refreshFolders);
+          await settle('refreshFileServer', refreshFileServer);
+          await settle('refreshRemote', refreshRemote);
         } else {
           dot.className = 'status-dot offline';
           statusText.textContent = 'Not paired';
