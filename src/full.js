@@ -526,3 +526,20 @@ ${err.message || 'Ollama connection failed.'}`);
   // Keep polling status in background every 4s
   setInterval(refreshModels, 4000);
 });
+
+// --- Harbor button in the top bar ------------------------------------------
+// Guarded on every step: this file also runs before the preload has necessarily
+// attached electronAPI in some load orders, and a bare call would throw and take
+// the rest of the top-bar wiring with it - the swallowed-throw pattern that broke
+// the dock's remote-access row in v3.4.0.
+(function wireHarborButton() {
+  const btn = document.getElementById('nav-harbor');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (window.electronAPI && typeof window.electronAPI.showDock === 'function') {
+      window.electronAPI.showDock();
+    } else {
+      console.error('[harbor] showDock is not exposed on electronAPI; cannot raise the panel');
+    }
+  });
+})();

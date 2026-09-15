@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listLocalGrants: () => ipcRenderer.invoke('localgrant:list'),
   revokeLocalGrant: (id) => ipcRenderer.invoke('localgrant:revoke', id),
   revokeAllLocalGrants: () => ipcRenderer.invoke('localgrant:revokeAll'),
+  // Bring the Harbor panel forward from the browser window's top bar.
+  showDock: () => ipcRenderer.send('window:showDock'),
   getPrivacy: () => ipcRenderer.invoke('privacy:get'),
   setPrivacy: (v) => ipcRenderer.invoke('privacy:set', v),
   setRemoteEnabled: (v) => ipcRenderer.invoke('remote:setEnabled', v),

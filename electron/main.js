@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, screen, Menu, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, BrowserView, screen, Menu, shell, ipcMain, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -90,7 +90,16 @@ function createDockWindow() {
     alwaysOnTop: true,
     transparent: true,
     resizable: true,
-    skipTaskbar: true,
+    // skipTaskbar WAS true, which is exactly why minimising made Harbor vanish
+    // with nothing to click. It is a defensible choice for a frameless
+    // always-on-top widget - the tray is meant to be the way back - EXCEPT that
+    // Windows 11 files new tray icons into the overflow chevron by default, so
+    // for most people that way back is invisible. Combined with minimize(), the
+    // window went nowhere a user could find it and the desktop shortcut became
+    // the only route. A window a user can minimise MUST have somewhere to
+    // minimise TO.
+    skipTaskbar: false,
+    title: 'Harbor',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -245,12 +254,33 @@ function createFullWindow() {
 function toggleDock() {
   if (!dockWindow) {
     createDockWindow();
-  } else if (dockWindow.isVisible() && dockWindow.isFocused()) {
+    return;
+  }
+  // MINIMISED IS NOT HIDDEN, and on Windows isVisible() returns TRUE for a
+  // minimised window. So the old first branch could match a window the user
+  // cannot see and "toggle" it by hiding it - taking one more click to get back
+  // something that was already gone. Restore explicitly before anything else.
+  if (dockWindow.isMinimized()) {
+    dockWindow.restore();
+    dockWindow.focus();
+    return;
+  }
+  if (dockWindow.isVisible() && dockWindow.isFocused()) {
     dockWindow.hide();
   } else {
     dockWindow.show();
     dockWindow.focus();
   }
+}
+
+// SHOW, never toggle. Called from the Wave OS browser top bar and the global
+// shortcut, where "toggle" would be wrong: you are in another window, so hiding
+// Harbor is never what pressing a Harbor button means.
+function showDock() {
+  if (!dockWindow) { createDockWindow(); return; }
+  if (dockWindow.isMinimized()) dockWindow.restore();
+  dockWindow.show();
+  dockWindow.focus();
 }
 
 // Expand from Dock to Full Window
@@ -278,6 +308,7 @@ function minimizeDock() {
 // Quit absolute function
 function quitApp() {
   app.isQuitting = true;
+  try { globalShortcut.unregisterAll(); } catch (e) { /* nothing registered */ }
   ollama.stopOllama();
   tunnel.stopTunnel();
   app.quit();
@@ -347,6 +378,18 @@ function buildAppMenu() {
 
 // Application startup
 app.whenReady().then(() => {
+  // A THIRD ROUTE BACK, deliberately. The taskbar button is the discoverable one
+  // and the top-bar button is the contextual one; this one exists because both of
+  // those can be lost behind a full-screen app. Registration is checked, because
+  // globalShortcut.register returns false when another program already owns the
+  // combination and silently doing nothing is how a feature becomes folklore.
+  try {
+    const ok = globalShortcut.register('Control+Shift+H', () => showDock());
+    if (!ok) console.error('[harbor] Ctrl+Shift+H is already taken by another application; Harbor has no global shortcut this session');
+  } catch (e) {
+    console.error('[harbor] could not register a global shortcut:', e && e.message);
+  }
+
   buildAppMenu();
   createDockWindow();
   createFullWindow();
@@ -370,6 +413,7 @@ app.whenReady().then(() => {
     expandWindow,
     closeDock,
     minimizeDock,
+    showDock,
     resizeBrowserView
   });
 

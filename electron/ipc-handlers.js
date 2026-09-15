@@ -109,6 +109,7 @@ function registerIpcHandlers({
   expandWindow,
   closeDock,
   minimizeDock,
+  showDock,
   onToggleSidebar,
   resizeBrowserView
 }) {
@@ -585,6 +586,12 @@ function registerIpcHandlers({
 
   ipcMain.on('window:closeDock', () => {
     closeDock();
+  });
+
+  // Bring Harbor forward from the Wave OS browser window. `send`, not `invoke`,
+  // matching the sibling window controls - there is nothing to return.
+  ipcMain.on('window:showDock', () => {
+    if (typeof showDock === 'function') showDock();
   });
 
   ipcMain.on('window:minimizeDock', () => {
