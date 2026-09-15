@@ -393,10 +393,69 @@ function registerIpcHandlers({
       // conflating them is what made the dock claim readiness it did not have.
       reachable: !!tunnel,
       serverRunning: !!srv.running,
+      // Reported as a COUNT and a PATH, not a boolean, so the card can say which
+      // folder is writable rather than just that one is.
+      writableCount: (cfg.folders || []).filter(f => f && f.permissions === 'read-write').length,
+      waveFolder: (cfg.folders || []).some(f => f && f.path === path.join(app.getPath('documents'), 'Wave OS'))
+        ? path.join(app.getPath('documents'), 'Wave OS') : null,
     };
   });
 
   ipcMain.handle('cloud:reindex', async () => await reindex());
+
+  // THE WAVE OS FOLDER. Eddie's design, and it is better than a per-folder
+  // read-write toggle as the primary path: one obvious place that Wave OS may
+  // write, created deliberately, instead of making a folder full of existing work
+  // like Dev Projects writable by a remote app. The blast radius of a write bug is
+  // then a folder that exists for exactly this purpose.
+  //
+  // Documents/, not Desktop/ or a new root: it is where an OS already puts
+  // documents and spreadsheets, so it is where a user looks for them outside
+  // Wave OS.
+  ipcMain.handle('cloud:createWaveFolder', async () => {
+    const target = path.join(app.getPath('documents'), 'Wave OS');
+    try {
+      fs.mkdirSync(target, { recursive: true });
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || 'Could not create the folder' };
+    }
+    const st = getSettingsData();
+    const folders = Array.isArray(st.sharedFolders) ? st.sharedFolders.slice() : [];
+    const existing = folders.find(f => f && f.path === target);
+    if (existing) {
+      // Idempotent, and it REPAIRS rather than duplicating: if the folder was
+      // shared read-only by hand earlier, this promotes it instead of adding a
+      // second entry pointing at the same path.
+      existing.permissions = 'read-write';
+      existing.label = existing.label || 'Wave OS';
+      existing.name = existing.name || 'Wave OS';
+    } else {
+      folders.push({ path: target, name: 'Wave OS', label: 'Wave OS', permissions: 'read-write' });
+    }
+    saveSettingsData({ sharedFolders: folders });
+    reindex().catch((e) => console.error('[harbor] reindex after createWaveFolder failed:', e && e.message));
+    // Awaited, unlike the addFolder case: the whole point of this button is that
+    // Wave OS can save here, and it cannot until the row carries the read-write
+    // permission. Verified 2026-09-15 that shared_folders.permissions accepts
+    // 'read-write' and round-trips - the same read-back check that caught `label`
+    // being silently dropped in v3.3.0.
+    const sync = await sendHeartbeat(true);
+    return { ok: true, path: target, synced: !!(sync && sync.ok) };
+  });
+
+  // Promote or demote any shared folder. Demotion is instant and needs no
+  // confirmation; it only ever removes permission.
+  ipcMain.handle('cloud:setFolderPermission', async (event, folderPath, permission) => {
+    const perm = permission === 'read-write' ? 'read-write' : 'read-only';
+    const st = getSettingsData();
+    const folders = Array.isArray(st.sharedFolders) ? st.sharedFolders.slice() : [];
+    const hit = folders.find(f => f && f.path === folderPath);
+    if (!hit) return { ok: false, error: 'That folder is not shared' };
+    hit.permissions = perm;
+    saveSettingsData({ sharedFolders: folders });
+    const sync = await sendHeartbeat(true);
+    return { ok: true, path: folderPath, permissions: perm, synced: !!(sync && sync.ok) };
+  });
 
   ipcMain.handle('fileserver:status', async () => {
     const st = fileserver.fileServerStatus();

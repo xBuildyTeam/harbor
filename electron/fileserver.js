@@ -248,6 +248,73 @@ function resolveShared(requested, folders) {
   return real || target;
 }
 
+// ===========================================================================
+// WRITE RESOLUTION. The most dangerous function in Harbor, so the reasoning is
+// here rather than in a commit message.
+//
+// THE RULE: read scope is determined by WHERE YOU ARE; write scope is determined
+// by WHAT YOU DECLARED.
+//
+// Reads differ by scope - the local listener may read the whole disk because the
+// person is sitting at the machine, while the tunnelled listener may only read
+// shared_folders. WRITES DO NOT DIFFER BY SCOPE AT ALL. They are confined to
+// folders explicitly marked read-write, whichever listener asked.
+//
+// SO THIS FUNCTION TAKES NO SCOPE PARAMETER, AND THAT ABSENCE IS THE GUARANTEE:
+// there is no argument any caller can pass to make it accept a whole-disk path.
+// A boolean or a scope string here would be a switch someone could later flip by
+// accident; a missing parameter cannot be flipped. Whole-disk WRITE does not
+// exist in this program.
+//
+// Until now the read-only 405 guard was doing this work for free, and a path
+// traversal bug could only ever leak a file. From here the same bug would
+// OVERWRITE one, so every check below is load-bearing.
+// ===========================================================================
+const MAX_WRITE_BYTES = 512 * 1024 * 1024;   // per file, stated rather than implied
+
+// The ONLY routes any write method may reach. A Set rather than a scattered
+// series of method checks, so the writable surface is one greppable list.
+const WRITE_ROUTES = new Set(['/write', '/mkdir']);
+
+function writableRoots(folders) {
+  return (folders || [])
+    .filter(f => f && f.path && f.permissions === 'read-write')
+    .map(f => realOrNull(path.resolve(f.path)) || path.resolve(f.path));
+}
+
+function resolveForWrite(requested, folders) {
+  if (!requested || typeof requested !== 'string') return null;
+  if (requested.indexOf('\0') !== -1) return null;
+
+  // An empty writable list is the DEFAULT state, and it must mean "no writes
+  // anywhere" rather than "no restriction". Getting this branch backwards is how
+  // an allowlist becomes a no-op.
+  const roots = writableRoots(folders);
+  if (!roots.length) return null;
+
+  const target = path.resolve(requested);
+
+  // Lexical check first, so a traversal aimed at a path that does not exist is
+  // refused even though realpath cannot resolve it.
+  if (!roots.some(r => isInside(r, target))) return null;
+
+  // THE PART THAT IS DIFFERENT FROM READING, and the easiest thing to get wrong.
+  // A file being written usually DOES NOT EXIST yet, so realpath(target) is null
+  // and a copied-from-reads realpath check would silently pass. The PARENT must
+  // therefore be resolved and re-checked: that is what catches a symlinked
+  // directory inside the share pointing somewhere else on the disk.
+  const realParent = realOrNull(path.dirname(target));
+  if (!realParent) return null;                                  // parent must exist
+  if (!roots.some(r => isInside(r, realParent))) return null;
+
+  // And if the target itself already exists as a symlink out of the share,
+  // writing "into the share" would land outside it.
+  const realTarget = realOrNull(target);
+  if (realTarget && !roots.some(r => isInside(r, realTarget))) return null;
+
+  return target;
+}
+
 // ---------------------------------------------------------------------------
 // CORS. Wave OS fetches this server DIRECTLY FROM THE BROWSER, cross-origin, so
 // without these headers every authorised request dies as a bare
@@ -396,8 +463,30 @@ function handle(req, res, scope, getConfig) {
     return res.end();
   }
 
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    return send(res, 405, { error: 'Read-only server' });
+  let url;
+  try {
+    url = new URL(req.url, 'http://127.0.0.1');
+  } catch (e) {
+    return send(res, 400, { error: 'Bad request' });
+  }
+  const route = url.pathname;
+
+  // METHOD GUARD, NOW ROUTE-AWARE rather than a blanket refusal. Parsing the URL
+  // has moved ABOVE this so the guard can see which route was asked for: a write
+  // method is accepted on exactly two routes and refused everywhere else, so
+  // adding writes did not widen any existing endpoint by a single verb.
+  // DELETE is still refused everywhere. Removing files on someone's home PC over
+  // a network is a different risk class from adding them, and nothing needs it
+  // yet.
+  const isRead = req.method === 'GET' || req.method === 'HEAD';
+  const isWrite = (req.method === 'PUT' || req.method === 'POST') && WRITE_ROUTES.has(route);
+  if (!isRead && !isWrite) {
+    return send(res, 405, {
+      error: WRITE_ROUTES.has(route) ? 'Use PUT or POST' : 'Read-only endpoint',
+      // Named explicitly so a caller can tell "this server cannot write" from
+      // "this route cannot write", which a bare 405 collapses.
+      writable_routes: Array.from(WRITE_ROUTES),
+    });
   }
   // The shared scope genuinely needs pairing - it exists to serve Wave OS. The
   // local scope does not: files on this PC are readable by the person at this PC
@@ -413,14 +502,6 @@ function handle(req, res, scope, getConfig) {
   // Accepting only the device token, as v3.2.0 did, 401s every relayed request.
   // Parsed BEFORE the auth check, because one narrow case below needs the route
   // to decide whether a query-string credential is acceptable.
-  let url;
-  try {
-    url = new URL(req.url, 'http://127.0.0.1');
-  } catch (e) {
-    return send(res, 400, { error: 'Bad request' });
-  }
-  const route = url.pathname;
-
   let presented = req.headers['x-harbor-token']
     || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
 
@@ -494,6 +575,108 @@ function handle(req, res, scope, getConfig) {
 
   // The shared roots themselves, so a client can start browsing without
   // guessing a path.
+  // =========================================================================
+  // WRITES. Gated three separate ways: the route-aware method guard above, the
+  // credential check the same as every read, and resolveForWrite - which is the
+  // only one of the three that knows about read-write folders.
+  // =========================================================================
+  if (route === '/write') {
+    const target = resolveForWrite(url.searchParams.get('path'), cfg.folders);
+    if (!target) {
+      // ONE refusal for every reason: outside the share, inside a read-only
+      // folder, traversal, symlink-out, or no writable folder configured at all.
+      // Distinct messages here would tell an unauthorised caller WHICH of those
+      // it hit, which is a map of the share.
+      return send(res, 403, {
+        error: 'Not a writable location',
+        hint: 'Writes are only allowed inside a shared folder marked read-write.',
+      });
+    }
+
+    const declared = parseInt(req.headers['content-length'] || '0', 10);
+    if (Number.isFinite(declared) && declared > MAX_WRITE_BYTES) {
+      return send(res, 413, { error: 'File too large', maxBytes: MAX_WRITE_BYTES });
+    }
+
+    // NO IMPLICIT OVERWRITE. A save that silently replaces a file the user did
+    // not mean to touch is indistinguishable from data loss, so replacing takes
+    // an explicit flag and the default answers 409.
+    const overwrite = url.searchParams.get('overwrite') === 'true';
+    let existed = false;
+    try { existed = fs.statSync(target).isFile(); } catch (e) { existed = false; }
+    if (existed && !overwrite) {
+      return send(res, 409, { error: 'File exists', path: target, hint: 'Pass overwrite=true to replace it.' });
+    }
+
+    // ATOMIC. Bytes go to a temp file in the SAME DIRECTORY - same directory
+    // because rename is only atomic within a filesystem - and only a completed,
+    // flushed temp file is renamed over the destination. A connection dropped
+    // mid-upload therefore leaves the original file untouched and a stray
+    // .harbor-tmp-* behind, rather than a truncated document. Writing straight to
+    // the destination would destroy the previous version to store a partial one.
+    const tmp = path.join(path.dirname(target), '.harbor-tmp-' + crypto.randomBytes(8).toString('hex'));
+    let ws;
+    try {
+      ws = fs.createWriteStream(tmp, { flags: 'wx' });
+    } catch (e) {
+      return send(res, 500, { error: 'Could not open a temporary file' });
+    }
+
+    let bytes = 0;
+    let failed = false;
+    const abort = (status, body) => {
+      if (failed) return;
+      failed = true;
+      try { ws.destroy(); } catch (e) {}
+      try { fs.unlinkSync(tmp); } catch (e) {}   // never leave the temp behind on a refusal
+      send(res, status, body);
+    };
+
+    req.on('data', (chunk) => {
+      bytes += chunk.length;
+      // Enforced on the STREAM, not just on Content-Length: a client may lie about
+      // or omit the header, and a cap that trusts a declared value is not a cap.
+      if (bytes > MAX_WRITE_BYTES) abort(413, { error: 'File too large', maxBytes: MAX_WRITE_BYTES });
+    });
+    req.on('error', () => abort(400, { error: 'Upload interrupted' }));
+    ws.on('error', () => abort(500, { error: 'Could not write the file' }));
+
+    req.pipe(ws);
+
+    ws.on('close', () => {
+      if (failed) return;
+      try {
+        fs.renameSync(tmp, target);
+      } catch (e) {
+        try { fs.unlinkSync(tmp); } catch (e2) {}
+        return send(res, 500, { error: 'Could not finalise the file' });
+      }
+      return send(res, existed ? 200 : 201, {
+        ok: true, path: target, bytes, replaced: existed,
+      });
+    });
+    return;
+  }
+
+  if (route === '/mkdir') {
+    const target = resolveForWrite(url.searchParams.get('path'), cfg.folders);
+    if (!target) {
+      return send(res, 403, {
+        error: 'Not a writable location',
+        hint: 'Folders can only be created inside a shared folder marked read-write.',
+      });
+    }
+    try {
+      // recursive:true so it is idempotent - creating a folder that already exists
+      // is a success, because the caller's intent ("this folder should exist") is
+      // already satisfied and an error would make retries fail.
+      fs.mkdirSync(target, { recursive: true });
+    } catch (e) {
+      return send(res, 500, { error: 'Could not create the folder' });
+    }
+    return send(res, 201, { ok: true, path: target });
+  }
+
   // SEARCH. The whole reason this exists on the server rather than in Wave OS:
   // answering "where is invoice-2024.pdf" by listing directories over the relay
   // would be thousands of round trips. It is computed on the machine that holds
@@ -545,7 +728,10 @@ function handle(req, res, scope, getConfig) {
   if (route === '/roots') {
     return send(res, 200, {
       roots: (cfg.folders || []).map(f => ({
-        path: f.path, name: f.name, permissions: f.permissions || 'read-only',
+        path: f.path, name: f.name, label: f.label || f.name,
+        // Defaulting to read-only matters: a folder saved before this version has no
+        // permissions field, and it must read as read-only rather than as writable.
+        permissions: f.permissions === 'read-write' ? 'read-write' : 'read-only',
       })),
     });
   }
@@ -711,6 +897,7 @@ function localServerStatus() {
 }
 
 module.exports = {
+  resolveForWrite, writableRoots, MAX_WRITE_BYTES,
   startFileServer, stopFileServer, fileServerStatus, resolveShared, isInside, DEFAULT_PORT,
   contentTypeFor, resolveLocal, resolveForScope, LOCAL_PORT, localServerStatus,
   mintGrantCode, listGrants, revokeGrant, revokeAllGrants, pendingCodeStatus,

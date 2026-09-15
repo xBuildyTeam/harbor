@@ -75,6 +75,18 @@ async function refreshCloudCard() {
   }
   if (size) size.textContent = st.built && !st.building ? fmtBytes(st.totalBytes) : '';
   if (btn) { btn.disabled = !!st.building; btn.textContent = st.building ? 'Scanning…' : 'Rescan'; }
+  const write = document.getElementById('lbl-cloud-write');
+  const btnWave = document.getElementById('btn-wave-folder');
+  if (write) {
+    // THREE STATES again, because "no writable folder" and "the Wave OS folder is
+    // ready" are different situations and only one of them needs a button.
+    if (st.waveFolder) { write.textContent = 'Wave OS folder'; write.title = st.waveFolder; }
+    else if (st.writableCount > 0) { write.textContent = st.writableCount + ' folder' + (st.writableCount === 1 ? '' : 's'); write.title = 'Folders you marked read-write'; }
+    else { write.textContent = 'Off — nothing writable'; write.title = 'Create the Wave OS folder to let Wave OS save documents here'; }
+  }
+  // The button disappears once the folder exists rather than sitting there doing
+  // nothing, which is what "Create" would mean on a second press.
+  if (btnWave) btnWave.style.display = (st.paired && !st.waveFolder) ? '' : 'none';
   if (reach) {
     // THREE DISTINCT STATES, not two. "This PC only" and "not paired" are
     // different situations with different fixes, and collapsing them is the
@@ -571,6 +583,30 @@ document.addEventListener('DOMContentLoaded', () => {
   // Cloud card. No search wiring: the search UI belonged in File Manager, not in a
   // 400px dock panel, so v3.10.1 removed it rather than leaving a second place to
   // look for a file.
+  const btnWaveFolder = document.getElementById('btn-wave-folder');
+  if (btnWaveFolder) {
+    btnWaveFolder.addEventListener('click', async () => {
+      if (!window.electronAPI || !window.electronAPI.createWaveFolder) return;
+      btnWaveFolder.disabled = true;
+      btnWaveFolder.textContent = 'Creating…';
+      try {
+        const r = await window.electronAPI.createWaveFolder();
+        if (!r || !r.ok) {
+          // Reported rather than swallowed: a failed mkdir with a re-enabled
+          // button looks exactly like a button that does nothing.
+          btnWaveFolder.textContent = (r && r.error) ? 'Failed — ' + r.error : 'Could not create it';
+          btnWaveFolder.disabled = false;
+          return;
+        }
+      } catch (e) {
+        btnWaveFolder.textContent = 'Could not create it';
+        btnWaveFolder.disabled = false;
+        return;
+      }
+      await refreshCloudCard();
+    });
+  }
+
   const btnReindex = document.getElementById('btn-reindex');
   if (btnReindex) {
     btnReindex.addEventListener('click', async () => {
