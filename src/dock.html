@@ -63,7 +63,10 @@
         <div class="card-header">
           <div class="card-info">
             <div id="dot-ollama" class="status-dot offline"></div>
-            <span class="card-title">Local AI (Ollama)</span>
+            <!-- Title is now FILLED IN from detection. Hardcoding "(Ollama)" told a
+                 user running LM Studio that Harbor had not found their runtime, when
+                 it had. -->
+            <span class="card-title" id="lbl-localai-title">Local AI</span>
           </div>
           <button id="btn-toggle-ollama" class="card-btn">Start Ollama</button>
         </div>
@@ -202,9 +205,10 @@
         <div class="help-scroll">
 
           <div class="help-card">
-            <div class="help-card-title">Local AI (Ollama)</div>
+            <div class="help-card-title">Local AI</div>
             <p>Runs a language model on this PC instead of in the cloud. Wave OS uses it as a fallback when Theta EdgeCloud has no worker free, so answers keep coming when the network is busy.</p>
-            <p class="help-note">You do not need this. Wave OS works fine without it &mdash; it is a speed and privacy option, not a requirement.</p>
+            <p>Harbor finds whatever you already have running &mdash; Ollama, LM Studio, Jan, llama.cpp, vLLM or text-generation-webui &mdash; because they all speak the same API. The card names the one it found.</p>
+            <p class="help-note">You do not need this. Wave OS works fine without it &mdash; it is a speed and privacy option, not a requirement. Harbor can start and stop Ollama; anything else it can only use, so close those in their own app.</p>
           </div>
 
           <div class="help-card">

@@ -41,9 +41,14 @@ function createTray({
     if (!tray) return;
 
     let isOllamaRunning = false;
+    let canManage = true;
+    let aiLabel = 'Ollama';
     try {
       const status = await checkOllamaStatus();
       isOllamaRunning = status.running;
+      // Same rule as the dock: never offer a menu item that cannot work.
+      if (status.canManage === false) canManage = false;
+      if (status.label) aiLabel = status.label;
     } catch (e) {
       isOllamaRunning = false;
     }
@@ -57,7 +62,10 @@ function createTray({
       { label: 'Open Wave OS (Full)', click: () => showFullWindow() },
       { type: 'separator' },
       {
-        label: isOllamaRunning ? 'Stop Ollama' : 'Start Ollama',
+        label: !canManage
+          ? `${aiLabel} running (managed outside Harbor)`
+          : (isOllamaRunning ? 'Stop Ollama' : 'Start Ollama'),
+        enabled: canManage,
         click: async () => {
           if (isOllamaRunning) {
             await stopOllama();

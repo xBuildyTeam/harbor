@@ -1,5 +1,6 @@
 const { spawn, exec } = require('child_process');
 const http = require('http');
+const localai = require('./localai');
 
 let ollamaProcess = null;
 
@@ -54,12 +55,25 @@ function fetchJson(url, options = {}, timeoutMs = 2000) {
  * Check if Ollama is running and get installed models
  */
 async function checkOllama() {
+  // NAME KEPT, MEANING WIDENED. The IPC channel is 'ollama:check' and the tray,
+  // the dock and Wave OS all call it, so renaming would break three consumers to
+  // no benefit. It now reports whichever OpenAI-compatible runtime is actually
+  // present, and carries `provider` / `canManage` so a caller can tell Ollama
+  // (startable) from LM Studio (found, not startable) instead of assuming.
   try {
-    const data = await fetchJson('http://localhost:11434/api/tags', {}, 2000);
-    const models = (data.models || []).map(m => m.name);
-    return { running: true, models };
+    const d = await localai.detect();
+    return {
+      running: d.running,
+      models: d.models,
+      provider: d.provider,
+      label: d.label,
+      baseUrl: d.baseUrl,
+      port: d.port,
+      canManage: d.canManage,
+      all: d.all,
+    };
   } catch (error) {
-    return { running: false, models: [] };
+    return { running: false, models: [], provider: null, canManage: true };
   }
 }
 
@@ -185,7 +199,10 @@ async function chat(model, messages, options = {}) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
-      const response = await fetch('http://localhost:11434/v1/chat/completions', {
+      // Base URL from detection, not a literal. Harbor already spoke the OpenAI
+      // shape here, so pointing it at whichever runtime is up is the whole change.
+      const detected = await localai.detect();
+      const response = await fetch(`${detected.baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, messages, stream: false, temperature: 0.7 }),
@@ -194,11 +211,11 @@ async function chat(model, messages, options = {}) {
       clearTimeout(timeout);
       const data = await response.json();
       const content = data?.choices?.[0]?.message?.content || '';
-      if (!content) throw new Error('Ollama returned empty response');
-      console.log('[ollama.js] Response from Ollama');
-      return { content, provider: 'ollama' };
+      if (!content) throw new Error(`${detected.label || 'Local runtime'} returned an empty response`);
+      console.log(`[ollama.js] Response from ${detected.label || 'local runtime'}`);
+      return { content, provider: detected.provider || 'local' };
     } catch (e) {
-      console.log(`[ollama.js] Ollama failed: ${e.message}`);
+      console.log(`[ollama.js] local runtime failed: ${e.message}`);
       if (aiMode === 'local') throw e; // No fallback in local-only mode
       // Fall through to Theta fallback in auto mode
     }
@@ -210,6 +227,8 @@ async function chat(model, messages, options = {}) {
 }
 
 module.exports = {
+  detectLocalAi: localai.detect,
+  invalidateLocalAi: localai.invalidate,
   checkOllama,
   startOllama,
   stopOllama,

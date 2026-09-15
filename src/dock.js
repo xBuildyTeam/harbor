@@ -220,12 +220,29 @@ document.addEventListener('DOMContentLoaded', () => {
       const status = await window.electronAPI.checkOllama();
       isOllamaRunning = status.running;
 
+      // NAME WHAT WAS ACTUALLY FOUND. The card said "Local AI (Ollama)" whatever was
+      // running, so LM Studio on :1234 looked undetected even when Harbor was
+      // talking to it.
+      const titleEl = document.getElementById('lbl-localai-title');
+      if (titleEl) titleEl.textContent = status.label ? `Local AI (${status.label})` : 'Local AI';
+
       if (isOllamaRunning) {
         dotOllama.className = 'status-dot online';
         labelOllamaStatus.textContent = 'Running';
         labelOllamaStatus.style.color = 'var(--green)';
-        btnToggleOllama.textContent = 'Stop Ollama';
-        btnToggleOllama.disabled = false;
+        // A START/STOP BUTTON THAT CANNOT WORK IS WORSE THAN NO BUTTON. Harbor can
+        // spawn and kill `ollama serve`; it cannot stop LM Studio, which is a desktop
+        // GUI app. So when the detected runtime is not manageable the control says so
+        // and is disabled, rather than offering an action that silently does nothing.
+        if (status.canManage === false) {
+          btnToggleOllama.textContent = 'Managed elsewhere';
+          btnToggleOllama.disabled = true;
+          btnToggleOllama.title = `${status.label || 'This runtime'} was started outside Harbor, so Harbor cannot stop it. Close it in its own app.`;
+        } else {
+          btnToggleOllama.textContent = 'Stop Ollama';
+          btnToggleOllama.disabled = false;
+          btnToggleOllama.title = '';
+        }
 
         // Display current model or default
         if (status.models && status.models.length > 0) {

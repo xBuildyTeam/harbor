@@ -500,16 +500,26 @@ function registerIpcHandlers({
   });
 
   // --- Ollama Handlers ---
+  // Every runtime found, for a UI that wants to say "LM Studio and Ollama are both
+  // up" rather than silently choosing.
+  ipcMain.handle('localai:detect', async () => await ollama.detectLocalAi({ force: true }));
+
   ipcMain.handle('ollama:check', async () => {
     return await ollama.checkOllama();
   });
 
   ipcMain.handle('ollama:start', async () => {
-    return await ollama.startOllama();
+    // The cache must not outlive the thing it describes.
+    ollama.invalidateLocalAi();
+    const r = await ollama.startOllama();
+    ollama.invalidateLocalAi();
+    return r;
   });
 
   ipcMain.handle('ollama:stop', async () => {
-    return await ollama.stopOllama();
+    const r = await ollama.stopOllama();
+    ollama.invalidateLocalAi();
+    return r;
   });
 
 
@@ -533,7 +543,12 @@ function registerIpcHandlers({
       ollama: {
         running: ollamaStatus.running,
         models: ollamaStatus.models || [],
-        endpoint: 'http://localhost:11434'
+        // FIFTH COPY OF THE SAME FACT, now derived. Wave OS reads this to build
+        // LOCAL_LLM_URL, so a literal here would have sent storyPipeline to the
+        // wrong port for anyone not running Ollama.
+        endpoint: ollamaStatus.baseUrl || 'http://localhost:11434',
+        provider: ollamaStatus.provider || null,
+        canManage: ollamaStatus.canManage !== false
       },
       tunnel: {
         active: !!tunnelUrl,

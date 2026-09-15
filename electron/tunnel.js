@@ -1,5 +1,6 @@
 const { spawn, execFile } = require('child_process');
 const cfbin = require('./cfbin');
+const localai = require('./localai');
 
 let tunnelProcess = null;
 let tunnelUrl = null;
@@ -26,7 +27,7 @@ function isTunnelBinaryAvailable() {
   });
 }
 
-function startTunnel() {
+function startTunnel(aiPort) {
   // Shares cfbin with the file-server tunnel, so a binary Harbor installed into
   // its own userData dir works for BOTH tunnels. Previously this checked PATH
   // only, so a managed install would have fixed remote access and left the
@@ -39,11 +40,17 @@ function startTunnel() {
       e.code = bin.unusable ? 'TUNNEL_BINARY_UNUSABLE' : 'TUNNEL_BINARY_MISSING';
       throw e;
     }
-    return startTunnelInner(bin.path);
+    // THE PORT IS RESOLVED FROM WHAT IS ACTUALLY RUNNING, not from a literal. If a
+    // caller passes one explicitly it wins; otherwise detection decides, so the
+    // tunnel and the runtime can never disagree about which port to publish.
+    if (aiPort) return startTunnelInner(bin.path, aiPort);
+    return localai.activePort()
+      .then((port) => startTunnelInner(bin.path, port))
+      .catch(() => startTunnelInner(bin.path, 11434));
   });
 }
 
-function startTunnelInner(resolvedPath) {
+function startTunnelInner(resolvedPath, aiPort) {
   return new Promise((resolve, reject) => {
     if (tunnelProcess) {
       if (tunnelUrl) {
@@ -63,7 +70,11 @@ function startTunnelInner(resolvedPath) {
       // shell:false now that we pass a resolved absolute path - a path with a
       // space in it (C:\Program Files\...) would be split into two arguments
       // under a shell, which is a bug waiting for the wrong install location.
-      tunnelProcess = spawn(resolvedPath, ['tunnel', '--url', 'http://localhost:11434'], {
+      // PORT IS A PARAMETER NOW. It was the literal 11434, so a user running LM Studio
+      // on 1234 would have had Harbor publish a tunnel to a port with nothing behind
+      // it - and storyPipeline's LOCAL_LLM_URL tier would then fail in a way that
+      // looks like a slow model rather than a wrong address.
+      tunnelProcess = spawn(resolvedPath, ['tunnel', '--url', `http://localhost:${aiPort}`], {
         windowsHide: true
       });
 
