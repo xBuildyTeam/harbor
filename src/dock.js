@@ -44,6 +44,83 @@ let grantCountdownTimer = null;
 
 // MODULE SCOPE, same reason as the grant helpers: reachable from the settings
 // modal, the Browser access card, and the dock body.
+// MODULE SCOPE, per the v3.4.0 rule that cost a whole feature: these are called
+// from the DOMContentLoaded body AND from initPairing's poll, which are two
+// separate top-level scopes. A closure here would be a ReferenceError that
+// node --check cannot see.
+function fmtBytes(n) {
+  if (!n || n < 0) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
+}
+
+async function refreshCloudCard() {
+  const api = window.electronAPI;
+  if (!api || !api.getCloudStats) return;
+  let st = null;
+  try { st = await api.getCloudStats(); } catch (e) { return; }
+  if (!st) return;
+  const dot = document.getElementById('dot-cloud');
+  const files = document.getElementById('lbl-cloud-files');
+  const size = document.getElementById('lbl-cloud-size');
+  const reach = document.getElementById('lbl-cloud-reach');
+  const btn = document.getElementById('btn-reindex');
+  if (files) {
+    // "Indexing..." is a real state and is shown as one. An empty count while a
+    // walk is running reads as "no files", which is a different and wrong claim.
+    files.textContent = st.building ? 'indexing…'
+      : (st.built ? st.fileCount.toLocaleString() + (st.truncated ? '+' : '') : '—');
+  }
+  if (size) size.textContent = st.built && !st.building ? fmtBytes(st.totalBytes) : '';
+  if (btn) { btn.disabled = !!st.building; btn.textContent = st.building ? 'Scanning…' : 'Rescan'; }
+  if (reach) {
+    // THREE DISTINCT STATES, not two. "This PC only" and "not paired" are
+    // different situations with different fixes, and collapsing them is the
+    // mistake the remote-access row already made once.
+    if (!st.paired) { reach.textContent = 'Not paired'; reach.title = 'Pair with Wave OS first'; }
+    else if (st.reachable) { reach.textContent = 'Anywhere'; reach.title = 'Your other devices can reach these folders'; }
+    else { reach.textContent = 'This PC only'; reach.title = 'Turn on Remote access to reach these files from your phone'; }
+  }
+  if (dot) {
+    dot.className = 'status-dot ' + (st.paired && st.built && st.folderCount > 0 ? 'online' : 'offline');
+  }
+}
+
+function renderCloudHits(payload) {
+  const box = document.getElementById('cloud-results');
+  if (!box) return;
+  box.innerHTML = '';
+  const hits = (payload && payload.results) || [];
+  if (!hits.length) {
+    const d = document.createElement('div');
+    d.className = 'cloud-empty';
+    d.textContent = 'No matches in your shared folders';
+    box.appendChild(d);
+    return;
+  }
+  for (const h of hits) {
+    const row = document.createElement('div');
+    row.className = 'cloud-hit';
+    row.title = h.path;                       // textContent throughout: a filename
+    const n = document.createElement('span'); // is untrusted input and must never
+    n.className = 'cloud-hit-name';           // be interpolated into innerHTML.
+    n.textContent = h.name;
+    const s2 = document.createElement('span');
+    s2.className = 'cloud-hit-size';
+    s2.textContent = fmtBytes(h.size);
+    row.appendChild(n); row.appendChild(s2);
+    box.appendChild(row);
+  }
+  if (payload && payload.truncated) {
+    const d = document.createElement('div');
+    d.className = 'cloud-empty';
+    d.textContent = 'More matches not shown — narrow the search';
+    box.appendChild(d);
+  }
+}
+
 function openHelpModal() {
   const m = document.getElementById('help-modal');
   const s2 = document.getElementById('settings-modal');
@@ -524,6 +601,35 @@ document.addEventListener('DOMContentLoaded', () => {
   loadAiMode();
 
   // Intervals
+  // Cloud card. Debounced search rather than per-keystroke: each call walks the
+  // whole index, and a fast typist would otherwise queue a scan per character.
+  const cloudSearch = document.getElementById('cloud-search');
+  let cloudSearchTimer = null;
+  if (cloudSearch) {
+    cloudSearch.addEventListener('input', () => {
+      if (cloudSearchTimer) clearTimeout(cloudSearchTimer);
+      const q = cloudSearch.value;
+      if (!q.trim()) { renderCloudHits({ results: [] }); return; }
+      cloudSearchTimer = setTimeout(async () => {
+        if (!window.electronAPI || !window.electronAPI.searchCloud) return;
+        try { renderCloudHits(await window.electronAPI.searchCloud(q, 50)); }
+        catch (e) { console.error('[dock] cloud search failed:', e); }
+      }, 180);
+    });
+  }
+  const btnReindex = document.getElementById('btn-reindex');
+  if (btnReindex) {
+    btnReindex.addEventListener('click', async () => {
+      if (!window.electronAPI || !window.electronAPI.reindexCloud) return;
+      btnReindex.disabled = true;
+      btnReindex.textContent = 'Scanning…';
+      try { await window.electronAPI.reindexCloud(); } catch (e) { /* refresh reports it */ }
+      await refreshCloudCard();
+    });
+  }
+  refreshCloudCard();
+  setInterval(refreshCloudCard, 5000);
+
   setInterval(checkOllamaStatus, 3000); // Poll Ollama every 3s
   setInterval(checkTunnelStatus, 5000); // Poll Tunnel URL every 5s
   setInterval(checkWaveOSConnection, 10000); // Ping Wave OS every 10s

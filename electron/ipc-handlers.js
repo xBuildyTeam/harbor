@@ -8,6 +8,7 @@ const tunnel = require('./tunnel');
 
 const settingsPath = path.join(app.getPath('userData'), 'wave-dock-settings.json');
 const cfbin = require('./cfbin');
+const fileindex = require('./fileindex');
 // Harbor's managed binary lives beside its settings, so it needs no admin rights
 // and cannot be missed by a stale PATH.
 cfbin.configure(app.getPath('userData'));
@@ -359,6 +360,52 @@ function registerIpcHandlers({
     return { ok: true, enabled: true, url: res.url };
   });
 
+  // ONE PLACE THAT REBUILDS, so "the index is stale" can never mean "one of the
+  // three callers forgot". Deferred by 1500ms at launch: the walk is chunked and
+  // yields, but there is no reason to compete with window creation either.
+  function reindex() {
+    const cfg = fileServerConfig();
+    return fileindex.build(cfg.folders, app.getPath('userData'));
+  }
+
+  // Load whatever the last run persisted so search works IMMEDIATELY at launch,
+  // then rebuild in the background to pick up anything changed while Harbor was
+  // closed. A stale index that answers beats a correct one that is not ready.
+  try { fileindex.load(app.getPath('userData')); } catch (e) { /* first run */ }
+  setTimeout(() => { reindex().catch((e) => console.error('[harbor] index build failed:', e && e.message)); }, 1500);
+
+  ipcMain.handle('cloud:stats', async () => {
+    const st = fileindex.getStats();
+    const cfg = fileServerConfig();
+    const srv = fileserver.fileServerStatus();
+    const tunnel = filetunnel.getUrl();
+    return {
+      paired: !!cfg.token,
+      folderCount: (cfg.folders || []).length,
+      fileCount: st.fileCount,
+      totalBytes: st.totalBytes,
+      built: st.built,
+      building: st.building,
+      builtAt: st.builtAt,
+      truncated: st.truncated,
+      // "Reachable from anywhere" is the tunnel being up, NOT remote access being
+      // switched on - those differ for the whole window while a tunnel starts, and
+      // conflating them is what made the dock claim readiness it did not have.
+      reachable: !!tunnel,
+      serverRunning: !!srv.running,
+    };
+  });
+
+  ipcMain.handle('cloud:reindex', async () => await reindex());
+
+  ipcMain.handle('cloud:search', async (event, q, limit) => {
+    // The dock is at the machine, so it searches the LOCAL scope - but the index
+    // only holds shared paths either way, so this cannot widen anything.
+    const cfg = fileServerConfig();
+    const validate = (p) => !!fileserver.resolveForScope(p, 'local', cfg.folders);
+    return fileindex.search(q, { validate, limit: Math.min(limit || 50, 200) });
+  });
+
   ipcMain.handle('fileserver:status', async () => {
     const st = fileserver.fileServerStatus();
     const cfg = fileServerConfig();
@@ -372,6 +419,9 @@ function registerIpcHandlers({
     return Array.isArray(st.sharedFolders) ? st.sharedFolders : [];
   });
 
+  // Adding a folder changes what is indexable, so the index follows immediately.
+  // Not awaited: the picker returning promptly matters more than the walk, and the
+  // card renders an honest "Indexing..." from getStats().building meanwhile.
   ipcMain.handle('pairing:addFolder', async () => {
     const result = await dialog.showOpenDialog({
       title: 'Share a folder with Wave OS',
@@ -389,6 +439,10 @@ function registerIpcHandlers({
       folders.push({ path: dir, name: path.basename(dir) || dir, permissions: 'read-only' });
     }
     saveSettingsData({ sharedFolders: folders });
+    // NOT awaited. The picker returning promptly matters more than the walk, and
+    // the Cloud card renders an honest "Indexing..." from getStats().building in
+    // the meantime. Awaiting here would freeze the dialog on a large folder.
+    reindex().catch((e) => console.error('[harbor] reindex after addFolder failed:', e && e.message));
     const sync = await sendHeartbeat(true);
     return { ok: true, folders, synced: !!(sync && sync.ok) };
   });

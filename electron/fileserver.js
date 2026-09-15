@@ -13,6 +13,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const fileindex = require('./fileindex');
 const crypto = require('crypto');
 
 const DEFAULT_PORT = 47615;       // SHARED scope. The tunnel points here.
@@ -493,6 +494,54 @@ function handle(req, res, scope, getConfig) {
 
   // The shared roots themselves, so a client can start browsing without
   // guessing a path.
+  // SEARCH. The whole reason this exists on the server rather than in Wave OS:
+  // answering "where is invoice-2024.pdf" by listing directories over the relay
+  // would be thousands of round trips. It is computed on the machine that holds
+  // the files and one answer is returned.
+  //
+  // TWO INDEPENDENT GUARANTEES, because a filename is itself a disclosure -
+  // `divorce-settlement-draft.docx` tells you something even if the bytes never
+  // move.
+  //   1. STRUCTURAL: the index only ever contains paths inside shared_folders, so
+  //      there is nothing outside the share for it to return.
+  //   2. PER-HIT: every result must still survive resolveForScope for the
+  //      REQUESTING scope. Redundant against the index as it stands today, and
+  //      that is exactly the point - it is what keeps the guarantee true if
+  //      someone later widens what gets indexed.
+  // A hit the scope may not read is dropped silently rather than refused, since
+  // the existence of the match is the thing being withheld.
+  if (route === '/search') {
+    const q = url.searchParams.get('q') || '';
+    const rawLimit = parseInt(url.searchParams.get('limit') || '200', 10);
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 200, 1), 500);
+    const validate = (p) => !!resolveForScope(p, scope, cfg.folders);
+    const r = fileindex.search(q, { validate, limit });
+    const st = fileindex.getStats();
+    return send(res, 200, {
+      query: q,
+      results: r.results,
+      truncated: r.truncated,
+      // Reported so a caller can tell "no matches" from "the index is not built
+      // yet", which look identical from an empty result array.
+      index: { built: st.built, building: st.building, fileCount: st.fileCount, builtAt: st.builtAt },
+    });
+  }
+
+  // Totals for the Cloud card, and for anything in Wave OS that wants to show
+  // how much of this PC is actually reachable.
+  if (route === '/stats') {
+    const st = fileindex.getStats();
+    return send(res, 200, {
+      fileCount: st.fileCount,
+      totalBytes: st.totalBytes,
+      folderCount: (cfg.folders || []).length,
+      built: st.built,
+      building: st.building,
+      builtAt: st.builtAt,
+      truncated: st.truncated,
+    });
+  }
+
   if (route === '/roots') {
     return send(res, 200, {
       roots: (cfg.folders || []).map(f => ({

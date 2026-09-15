@@ -135,6 +135,34 @@
       </section>
 
 
+
+      <!-- Card: YOUR CLOUD. The card that names what Harbor actually is. Every
+           other card reports a component (a runtime, a tunnel, a pairing); this
+           one reports the PRODUCT - how much of this PC is reachable, and from
+           where. -->
+      <section id="cloud-card" class="status-card">
+        <div class="card-header">
+          <div class="card-info">
+            <div id="dot-cloud" class="status-dot offline"></div>
+            <span class="card-title">Your Cloud</span>
+          </div>
+          <button id="btn-reindex" class="card-btn" title="Rescan the shared folders">Rescan</button>
+        </div>
+        <div class="card-body">
+          <span class="card-subtitle">Files: <strong id="lbl-cloud-files" style="color: var(--teal);">—</strong></span>
+          <span id="lbl-cloud-size" class="card-subtitle">—</span>
+        </div>
+        <div class="card-body">
+          <span class="card-subtitle">Reach</span>
+          <span id="lbl-cloud-reach" class="card-subtitle">—</span>
+        </div>
+        <div class="card-body" style="margin-top:2px;">
+          <input type="text" id="cloud-search" class="settings-input" style="width:100%;"
+                 placeholder="Search your files…" autocomplete="off">
+        </div>
+        <div id="cloud-results"></div>
+      </section>
+
       <!-- Card: Browser access. ITS OWN CARD, because inside the pairing card it
            read as a pairing step - and it is not one. Pairing connects this PC to
            a Wave OS account, once. This grants ONE browser on this PC temporary

@@ -576,3 +576,34 @@ html, body {
   padding-left: 8px;
 }
 #browser-access-card .card-btn { font-size: 10px; padding: 3px 8px; }
+
+/* --- Cloud card ----------------------------------------------------------- */
+#cloud-results {
+  max-height: 132px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.cloud-hit {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  cursor: default;
+}
+.cloud-hit:hover { background: var(--accent-soft, rgba(255,255,255,0.05)); }
+.cloud-hit-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cloud-hit-size {
+  color: var(--muted, #9aa4b2);
+  flex-shrink: 0;
+}
+.cloud-empty {
+  font-size: 10px;
+  color: var(--muted, #9aa4b2);
+  padding: 4px 6px;
+}
