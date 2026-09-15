@@ -398,14 +398,6 @@ function registerIpcHandlers({
 
   ipcMain.handle('cloud:reindex', async () => await reindex());
 
-  ipcMain.handle('cloud:search', async (event, q, limit) => {
-    // The dock is at the machine, so it searches the LOCAL scope - but the index
-    // only holds shared paths either way, so this cannot widen anything.
-    const cfg = fileServerConfig();
-    const validate = (p) => !!fileserver.resolveForScope(p, 'local', cfg.folders);
-    return fileindex.search(q, { validate, limit: Math.min(limit || 50, 200) });
-  });
-
   ipcMain.handle('fileserver:status', async () => {
     const st = fileserver.fileServerStatus();
     const cfg = fileServerConfig();

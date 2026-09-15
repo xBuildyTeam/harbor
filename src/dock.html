@@ -156,11 +156,14 @@
           <span class="card-subtitle">Reach</span>
           <span id="lbl-cloud-reach" class="card-subtitle">—</span>
         </div>
-        <div class="card-body" style="margin-top:2px;">
-          <input type="text" id="cloud-search" class="settings-input" style="width:100%;"
-                 placeholder="Search your files…" autocomplete="off">
-        </div>
-        <div id="cloud-results"></div>
+        <!-- NO SEARCH BOX HERE, deliberately, and it was here in v3.10.0 by mistake.
+             Wave OS gets exactly ONE file manager; Harbor is a CONNECTION surface -
+             pair, share, tunnel, status. A search field in a 400px dock panel both
+             duplicated File Manager and invited the question "why would I search
+             from here", which is the correct question. The INDEX and the /search
+             endpoint stay: those belong on the machine that holds the files, and
+             File Manager is what should call them over the relay. Building the
+             engine here was right; putting the UI here was not. -->
       </section>
 
       <!-- Card: Browser access. ITS OWN CARD, because inside the pairing card it
@@ -233,6 +236,14 @@
         <div class="help-scroll">
 
           <div class="help-card">
+            <div class="help-card-title">Your Cloud</div>
+            <p>This is what Harbor is for. The folders you share become storage Wave OS can open from any of your devices &mdash; your phone, a laptop, a school computer &mdash; while <strong>the files themselves never leave this PC.</strong> There is no copy in a data centre and nothing to pay for storage.</p>
+            <p>Harbor keeps a list of the files in your shared folders so Wave OS can find one by name instantly instead of opening folder after folder across the network. The list covers <strong>only your shared folders</strong> &mdash; never the rest of the drive &mdash; and it holds names and sizes, not the contents.</p>
+            <p><strong>Files</strong> and the size beside it are what is currently reachable. <strong>Reach</strong> says who can get to it: <em>Anywhere</em> means your other devices can, <em>This PC only</em> means remote access is off, and <em>Not paired</em> means Harbor is not connected to your account yet.</p>
+            <p><strong>Rescan</strong> re-reads the folders. Harbor does this by itself when you add a folder and when it starts, so you only need it if you have changed a lot of files outside Wave OS and want the count caught up immediately.</p>
+            <p class="help-note">Searching and browsing your files happens in Wave OS&rsquo;s File Manager, not here. This card is a status panel &mdash; it tells you what is reachable and from where. Right now everything is <strong>read-only</strong>: Wave OS can open your files but cannot change or delete them.</p>
+          </section>
+          <section class="help-card">
             <div class="help-card-title">Local AI</div>
             <p>Runs a language model on this PC instead of in the cloud. Wave OS uses it as a fallback when Theta EdgeCloud has no worker free, so answers keep coming when the network is busy.</p>
             <p>Harbor finds whatever you already have running &mdash; Ollama, LM Studio, Jan, llama.cpp, vLLM or text-generation-webui &mdash; because they all speak the same API. The card names the one it found.</p>

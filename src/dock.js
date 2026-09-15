@@ -88,39 +88,6 @@ async function refreshCloudCard() {
   }
 }
 
-function renderCloudHits(payload) {
-  const box = document.getElementById('cloud-results');
-  if (!box) return;
-  box.innerHTML = '';
-  const hits = (payload && payload.results) || [];
-  if (!hits.length) {
-    const d = document.createElement('div');
-    d.className = 'cloud-empty';
-    d.textContent = 'No matches in your shared folders';
-    box.appendChild(d);
-    return;
-  }
-  for (const h of hits) {
-    const row = document.createElement('div');
-    row.className = 'cloud-hit';
-    row.title = h.path;                       // textContent throughout: a filename
-    const n = document.createElement('span'); // is untrusted input and must never
-    n.className = 'cloud-hit-name';           // be interpolated into innerHTML.
-    n.textContent = h.name;
-    const s2 = document.createElement('span');
-    s2.className = 'cloud-hit-size';
-    s2.textContent = fmtBytes(h.size);
-    row.appendChild(n); row.appendChild(s2);
-    box.appendChild(row);
-  }
-  if (payload && payload.truncated) {
-    const d = document.createElement('div');
-    d.className = 'cloud-empty';
-    d.textContent = 'More matches not shown — narrow the search';
-    box.appendChild(d);
-  }
-}
-
 function openHelpModal() {
   const m = document.getElementById('help-modal');
   const s2 = document.getElementById('settings-modal');
@@ -601,22 +568,9 @@ document.addEventListener('DOMContentLoaded', () => {
   loadAiMode();
 
   // Intervals
-  // Cloud card. Debounced search rather than per-keystroke: each call walks the
-  // whole index, and a fast typist would otherwise queue a scan per character.
-  const cloudSearch = document.getElementById('cloud-search');
-  let cloudSearchTimer = null;
-  if (cloudSearch) {
-    cloudSearch.addEventListener('input', () => {
-      if (cloudSearchTimer) clearTimeout(cloudSearchTimer);
-      const q = cloudSearch.value;
-      if (!q.trim()) { renderCloudHits({ results: [] }); return; }
-      cloudSearchTimer = setTimeout(async () => {
-        if (!window.electronAPI || !window.electronAPI.searchCloud) return;
-        try { renderCloudHits(await window.electronAPI.searchCloud(q, 50)); }
-        catch (e) { console.error('[dock] cloud search failed:', e); }
-      }, 180);
-    });
-  }
+  // Cloud card. No search wiring: the search UI belonged in File Manager, not in a
+  // 400px dock panel, so v3.10.1 removed it rather than leaving a second place to
+  // look for a file.
   const btnReindex = document.getElementById('btn-reindex');
   if (btnReindex) {
     btnReindex.addEventListener('click', async () => {
