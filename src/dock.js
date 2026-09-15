@@ -829,6 +829,38 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     refresh();
+
+    // THE PAIRING CARD WAS A SNAPSHOT PRESENTED AS A STATUS. Ollama polls every
+    // 3s, the tunnel every 5s, Wave OS every 10s - and this card polled NEVER.
+    // refresh() ran once at startup and then only on a click. At launch the
+    // tunnel is genuinely mid-start, so isStarting() is true and the row
+    // correctly renders "On (starting...)" - and then FREEZES THERE FOREVER,
+    // because nothing ever asks again. The tunnel came up seconds later and the
+    // label never found out. That is why clicking the toggle "fixed" it: the
+    // click handler is one of the only things that calls refreshRemote().
+    //
+    // The same freeze applied to every row in the card. If the tunnel DIED, the
+    // dock would have kept saying "On" indefinitely - a status that cannot report
+    // a change in the thing it displays is not a status, it is a screenshot.
+    // v3.4.2 taught this exact lesson about a label that could not distinguish
+    // starting from stalled; this is the same lesson one level up, in the
+    // refresh loop rather than the state model.
+    setInterval(async () => {
+      // NEVER poll while a pairing code is on screen. refreshFolders and friends
+      // are harmless, but re-entering the card mid-pairing risks clobbering the
+      // code and countdown the user is actively reading off it.
+      if (codeRow && codeRow.style.display !== 'none') return;
+      let st = null;
+      try { st = await api.getPairingStatus(); } catch (e) { return; }
+      if (!st) return;
+      // A device unpaired from elsewhere must collapse the card, so the
+      // paired/unpaired transition goes through the full refresh.
+      if (!st.paired) { await refresh(); return; }
+      await settle('poll:refreshFolders', refreshFolders);
+      await settle('poll:refreshFileServer', refreshFileServer);
+      await settle('poll:refreshRemote', refreshRemote);
+      await settle('poll:refreshGrants', refreshGrants);
+    }, 5000);
   }
 
   if (document.readyState === 'loading') {
