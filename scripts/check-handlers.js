@@ -105,6 +105,45 @@ const chk = (n, ok, extra) => {
     const rm = await handlers.get('cloud:removeWaveFolder')({});
     chk('remove -> ok, files kept', rm && rm.ok === true && rm.filesKept === true, JSON.stringify(rm));
     chk('  removed folder still on disk', c2 && c2.path && fs.existsSync(c2.path), 'deleted!');
+
+    // THE v3.12.2 REGRESSION, which is what Eddie actually hit: after Remove the card
+    // must report NO folder. The old fallback found a leftover writable share and
+    // popped the display back to an older location, so Remove looked like it failed.
+    const after = await handlers.get('cloud:stats')({});
+    chk('after remove, the card reports NO wave folder', after && !after.waveFolder, JSON.stringify(after && after.waveFolder));
+    chk('  and reports 0 writable folders', after && after.writableCount === 0, after && after.writableCount);
+
+    // ORPHAN CLEANUP: two writable folders (the state Eddie's live row was actually
+    // in, from the pre-v3.12.1 persistence bug) must collapse to one on a change, and
+    // to zero on a remove - without needing Harbor reset.
+    const o1 = fs.mkdtempSync(path.join(os.tmpdir(), 'harbor-orph1-'));
+    const o2 = fs.mkdtempSync(path.join(os.tmpdir(), 'harbor-orph2-'));
+    dialogResult = { canceled: false, filePaths: [o1] };
+    await handlers.get('cloud:createWaveFolder')({});
+    // Simulate the orphan: a second writable share with NO stored path, exactly as a
+    // pre-fix folder would have been left behind.
+    const inject = await handlers.get('cloud:stats')({});
+    dialogResult = { canceled: false, filePaths: [o2] };
+    const moved = await handlers.get('cloud:createWaveFolder')({});
+    chk('changing away un-shares the previous writable folder', moved && moved.unsharedCount >= 1, JSON.stringify(moved && moved.unshared));
+    const st2 = await handlers.get('cloud:stats')({});
+    chk('  exactly ONE writable folder remains', st2 && st2.writableCount === 1, st2 && st2.writableCount);
+    chk('  and it is the newly chosen one', st2 && st2.waveFolder === moved.path, st2 && st2.waveFolder);
+    const rm2 = await handlers.get('cloud:removeWaveFolder')({});
+    chk('remove clears it', rm2 && rm2.ok === true && rm2.removedCount === 1, JSON.stringify(rm2));
+    const st3 = await handlers.get('cloud:stats')({});
+    chk('  card now reports none, 0 writable', st3 && !st3.waveFolder && st3.writableCount === 0, JSON.stringify({ w: st3 && st3.waveFolder, c: st3 && st3.writableCount }));
+    // And Remove on an already-clean state must refuse plainly, not throw.
+    const rm3 = await handlers.get('cloud:removeWaveFolder')({});
+    chk('remove again -> plain refusal, no throw', rm3 && rm3.ok === false && !!rm3.error, JSON.stringify(rm3));
+    // CHOOSING AGAIN AFTER REMOVE must work with no Harbor restart - the second half
+    // of Eddie's report ("doesnt let you reselect a new folder without resetting").
+    const o3 = fs.mkdtempSync(path.join(os.tmpdir(), 'harbor-orph3-'));
+    dialogResult = { canceled: false, filePaths: [o3] };
+    const again = await handlers.get('cloud:createWaveFolder')({});
+    chk('choosing a new folder AFTER remove works', again && again.ok === true, JSON.stringify(again));
+    const st4 = await handlers.get('cloud:stats')({});
+    chk('  and the card shows the new one', st4 && st4.waveFolder === again.path, st4 && st4.waveFolder);
     dialogResult = { canceled: true, filePaths: [] };
   }
 

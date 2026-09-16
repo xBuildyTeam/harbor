@@ -410,16 +410,25 @@ function registerIpcHandlers({
       // Reported as a COUNT and a PATH, not a boolean, so the card can say which
       // folder is writable rather than just that one is.
       writableCount: (cfg.folders || []).filter(f => f && f.permissions === 'read-write').length,
-      // Read from the STORED path, never recomputed from Documents. v3.11.0 derived
-      // it by assuming the location, so a folder anywhere else would have reported
-      // as "no Wave OS folder" while being perfectly writable - a card disagreeing
-      // with the thing it describes.
+      // THE STORED PATH, AND NOTHING ELSE. There used to be a fallback here - "if no
+      // path is stored, show the first read-write folder" - added in v3.11.1 to make
+      // the card display something while waveFolderPath was being silently dropped by
+      // the settings schema.
+      //
+      // THAT COMPENSATING HACK OUTLIVED THE BUG IT COMPENSATED FOR AND BECAME THE BUG.
+      // Once v3.12.1 made persistence work, the fallback was not merely redundant: it
+      // RESURRECTED REMOVED FOLDERS. Remove cleared the stored path, the fallback then
+      // found a leftover read-write folder, and the card popped straight back to an
+      // older location - exactly what Eddie saw ("once you click remove it reverts to
+      // the old folder"). A workaround for a storage bug, still running after the
+      // storage was fixed, reporting state that no longer existed.
       waveFolder: (() => {
         const stored = (getSettingsData() || {}).waveFolderPath;
-        if (stored && (cfg.folders || []).some(f => f && f.path === stored)) return stored;
-        const rw = (cfg.folders || []).find(f => f && f.permissions === 'read-write');
-        return rw ? rw.path : null;
+        return (stored && (cfg.folders || []).some(f => f && f.path === stored)) ? stored : null;
       })(),
+      // Surfaced so orphans can never again be invisible: if this exceeds 1 there are
+      // leftover writable grants that no card was showing.
+      writableCount: (cfg.folders || []).filter(f => f && f.permissions === 'read-write').length,
     };
   });
 
@@ -523,13 +532,27 @@ function registerIpcHandlers({
     // FILES ARE NOT MOVED, deliberately. Moving someone's documents as a side
     // effect of changing a setting is how data gets lost, and a half-finished move
     // is worse than none. The dialog title says so before they choose.
-    let unshared = null;
-    if (previous && previous !== target) {
-      const before = folders.length;
-      for (let i = folders.length - 1; i >= 0; i--) {
-        if (folders[i] && folders[i].path === previous) folders.splice(i, 1);
+    // UN-SHARE EVERY OTHER WRITABLE FOLDER, not just the one `previous` names.
+    //
+    // WHY THE NARROWER VERSION WAS WRONG, proved by Eddie's live row: it had TWO
+    // read-write folders, OneDrive\Documents\Wave OS and C:\Wave Cloud\Wave OS. The
+    // first was created before v3.12.1, when waveFolderPath was still being dropped,
+    // so at change-time `previous` was null and there was nothing to un-share. Fixing
+    // the schema fixed persistence GOING FORWARD and left the pre-fix folder orphaned
+    // - a migration gap I should have seen coming.
+    //
+    // Treating "the set of writable folders" as the thing being replaced makes this
+    // SELF-HEALING: orphans from any earlier version get cleaned on the next change,
+    // and waveFolderPath becomes a display convenience rather than something
+    // correctness depends on. read-write has only ever come from this feature, so
+    // there is nothing else here to clobber.
+    const unshared = [];
+    for (let i = folders.length - 1; i >= 0; i--) {
+      const f = folders[i];
+      if (f && f.permissions === 'read-write' && f.path !== target) {
+        unshared.push(f.path);
+        folders.splice(i, 1);
       }
-      if (folders.length !== before) unshared = previous;
     }
 
     // Remember it so the card can name THIS folder rather than assuming Documents.
@@ -540,7 +563,12 @@ function registerIpcHandlers({
     // that shared_folders.permissions accepts 'read-write' and round-trips - the
     // same read-back check that caught `label` being silently dropped in v3.3.0.
     const sync = await sendHeartbeat(true);
-    return { ok: true, path: target, previous: unshared, changed: !!unshared, synced: !!(sync && sync.ok) };
+    return {
+      ok: true, path: target,
+      previous: unshared[0] || null, unshared, unsharedCount: unshared.length,
+      changed: unshared.length > 0,
+      synced: !!(sync && sync.ok),
+    };
   });
 
   // STOP SAVING TO THE PC WITHOUT DELETING ANYTHING. The folder and every file in
@@ -548,14 +576,18 @@ function registerIpcHandlers({
   // must never be able to destroy data - otherwise nobody dares click it.
   ipcMain.handle('cloud:removeWaveFolder', async () => {
     const st = getSettingsData();
-    const target = st.waveFolderPath;
-    if (!target) return { ok: false, error: 'No Wave OS folder is set' };
-    const folders = (Array.isArray(st.sharedFolders) ? st.sharedFolders : [])
-      .filter(f => f && f.path !== target);
+    const all = Array.isArray(st.sharedFolders) ? st.sharedFolders : [];
+    // EVERY writable grant, not only the stored one. "Stop saving to this PC" has to
+    // mean it, and removing one of two left the card showing the other - which read
+    // as Remove silently failing. Also the only way to clear orphans left behind by
+    // the v3.11.0-v3.12.0 persistence bug without asking Eddie to reset Harbor.
+    const removed = all.filter(f => f && f.permissions === 'read-write').map(f => f.path);
+    if (!removed.length) return { ok: false, error: 'Nothing is writable, so there is nothing to remove' };
+    const folders = all.filter(f => !(f && f.permissions === 'read-write'));
     saveSettingsData({ sharedFolders: folders, waveFolderPath: null });
     reindex().catch((e) => console.error('[harbor] reindex after removeWaveFolder failed:', e && e.message));
     const sync = await sendHeartbeat(true);
-    return { ok: true, path: target, filesKept: true, synced: !!(sync && sync.ok) };
+    return { ok: true, path: removed[0], removed, removedCount: removed.length, filesKept: true, synced: !!(sync && sync.ok) };
   });
 
   // So "where is it?" is answerable by clicking, not by reading a tooltip.

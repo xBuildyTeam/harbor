@@ -118,6 +118,17 @@ async function refreshCloudCard() {
       const parts = st.waveFolder.split(/[\\/]/).filter(Boolean);
       write.textContent = parts.slice(-2).join(' \u203a ') || st.waveFolder;
       write.title = st.waveFolder + '  (click to open)';
+      // TELL THE TRUTH ABOUT ORPHANS. An install upgraded from v3.11.x can carry a
+      // second writable folder left behind by the persistence bug - Eddie's row had
+      // exactly two - and until now no card showed it. The next Change or Remove
+      // clears it, but silently carrying an extra writable grant is not something to
+      // leave unsaid.
+      if (st.writableCount > 1) {
+        const extra = st.writableCount - 1;
+        write.textContent += `  (+${extra} older)`;
+        write.title = st.waveFolder + `\n\nPlus ${extra} older folder(s) still writable from a previous version.`
+          + '\nChange location or Remove clears them. Click to open the current one.';
+      }
       write.style.cursor = 'pointer';
       write.style.textDecoration = 'underline dotted';
     }
@@ -715,9 +726,16 @@ document.addEventListener('DOMContentLoaded', () => {
       btnWaveRemove.dataset.confirm = '';
       btnWaveRemove.disabled = true;
       btnWaveRemove.textContent = 'Removing…';
-      try { await window.electronAPI.removeWaveFolder(); } catch (e) {}
+      // Surfaced, not swallowed - the empty catch here is how a failing Remove looked
+      // identical to a Remove that worked and then got undone by the card fallback.
+      let err = null;
+      try {
+        const r = await window.electronAPI.removeWaveFolder();
+        if (!r || !r.ok) err = (r && r.error) || 'Remove failed';
+      } catch (e) { err = (e && e.message) || String(e); }
       btnWaveRemove.disabled = false;
       btnWaveRemove.textContent = 'Remove';
+      if (err) { btnWaveRemove.textContent = 'Failed'; btnWaveRemove.title = err; console.error('[dock] removeWaveFolder:', err); }
       await refreshCloudCard();
     });
   }
