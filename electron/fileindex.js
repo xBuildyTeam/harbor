@@ -63,7 +63,8 @@ function indexPath(userDataDir) {
  * event loop. A user would see the whole app hang for no visible reason.
  *
  * So the walk yields. It processes a bounded batch of directory entries, then
- * hands control back via setImmediate. Slower in wall-clock terms and completely
+ * hands control back via setImmediate (and, since v3.12.3, awaits async fs calls so
+ * no single directory read can block the loop either). Slower in wall-clock terms and completely
  * invisible, which is the correct trade for background work.
  *
  * SYMLINKS ARE NOT FOLLOWED: lstat rather than stat, so a link inside a shared
@@ -73,38 +74,80 @@ function indexPath(userDataDir) {
  */
 const BATCH = 400;
 
+// PER-DIRECTORY TIMEOUT. A folder that never answers must cost the index one
+// directory, not the whole run.
+const DIR_TIMEOUT_MS = 8000;
+
+async function readDirGuarded(dir) {
+  let timer;
+  try {
+    return await Promise.race([
+      fs.promises.readdir(dir, { withFileTypes: true }),
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('DIR_TIMEOUT')), DIR_TIMEOUT_MS); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function walkAsync(roots, onDone) {
   const out = [];
   // Explicit stack rather than recursion: a recursive async walk of a deep tree
   // can exhaust the call stack, and the depth cap alone would not save it.
   const stack = roots.map(r => ({ dir: path.resolve(r), depth: 0 }));
+  let timedOut = 0;
 
-  function step() {
+  // WHY THIS IS ASYNC NOW, and why v3.10.0's chunking was only half a fix.
+  //
+  // The chunked walk yields via setImmediate every 400 entries, and I described that
+  // as making it impossible to freeze the dock. THAT WAS HALF TRUE. Yielding BETWEEN
+  // calls does nothing about the time spent INSIDE one call: fs.readdirSync blocks
+  // the event loop for its whole duration, and this walk runs in the MAIN process, so
+  // for that entire time the dock, the Wave OS window and the tray are all frozen
+  // together - precisely the failure the chunking was supposed to prevent.
+  //
+  // On a normal local folder the call is sub-millisecond and it never showed. On a
+  // OneDrive Files On-Demand placeholder being hydrated on first access it can be
+  // seconds. That is not hypothetical: Eddie's Wave OS folder was a fresh folder under
+  // OneDrive\Documents, it returned 502 through the relay for exactly as long as it
+  // took to materialise, and it has answered normally ever since.
+  //
+  // Same lesson as the /list rewrite in v3.12.0, one layer down: making it async IS
+  // the fix, and a timeout is only possible once it is. A guard around sync I/O is
+  // theatre, and yielding between blocking calls is a smaller version of the same
+  // mistake.
+  async function step() {
     let processed = 0;
     while (stack.length && processed < BATCH && out.length < MAX_ENTRIES) {
       const { dir, depth } = stack.pop();
       if (depth > MAX_DEPTH) continue;
       let names;
       try {
-        names = fs.readdirSync(dir, { withFileTypes: true });
+        names = await readDirGuarded(dir);
       } catch (e) {
-        continue; // an unreadable directory is not an error, it is just not indexed
+        // An unreadable directory was already "just not indexed". A directory that
+        // will not answer in time is treated identically: skipped, counted, and the
+        // run continues. One stalled folder must not cost the whole index.
+        if (e && e.message === 'DIR_TIMEOUT') timedOut++;
+        continue;
       }
       for (const d of names) {
         if (out.length >= MAX_ENTRIES) break;
         const full = path.join(dir, d.name);
         let st;
-        try { st = fs.lstatSync(full); } catch (e) { continue; }
+        try { st = await fs.promises.lstat(full); } catch (e) { continue; }
         if (st.isSymbolicLink()) continue;   // never traverse or record a link
         if (st.isDirectory()) stack.push({ dir: full, depth: depth + 1 });
         else if (st.isFile()) out.push({ p: full, n: d.name.toLowerCase(), s: st.size, m: st.mtimeMs });
         processed++;
       }
     }
-    if (stack.length && out.length < MAX_ENTRIES) return setImmediate(step);
-    onDone(out);
+    if (stack.length && out.length < MAX_ENTRIES) return setImmediate(() => { step(); });
+    // Surfaced rather than swallowed: an index quietly missing a folder is how "22
+    // files" can look complete while a share was never read.
+    onDone(out, { timedOutDirs: timedOut });
   }
-  setImmediate(step);
+  setImmediate(() => { step(); });
 }
 
 /**
@@ -123,8 +166,9 @@ function build(folders, userDataDir) {
     return Promise.resolve(getStats());
   }
   return new Promise((resolve) => {
-    walkAsync(roots, (out) => {
+    walkAsync(roots, (out, info) => {
       entries = out;
+      const timedOutDirs = (info && info.timedOutDirs) || 0;
       stats = {
         built: true,
         building: false,
@@ -133,6 +177,12 @@ function build(folders, userDataDir) {
         totalBytes: out.reduce((a, e) => a + (e.s || 0), 0),
         folderCount: roots.length,
         truncated: out.length >= MAX_ENTRIES,
+        // CARRIED THROUGH TO THE CARD, because this is the field that would have made
+        // this morning's debugging trivial. A file count alone cannot distinguish "the
+        // index read everything" from "the index skipped a folder that would not
+        // answer" - and I spent real time treating a completed index as proof that
+        // every folder responded promptly. It was not proof; it was silence.
+        timedOutDirs,
         error: null,
       };
       persist(userDataDir);

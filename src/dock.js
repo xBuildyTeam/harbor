@@ -102,6 +102,17 @@ async function refreshCloudCard() {
     // walk is running reads as "no files", which is a different and wrong claim.
     files.textContent = st.building ? 'indexing…'
       : (st.built ? st.fileCount.toLocaleString() + (st.truncated ? '+' : '') : '—');
+    // A COUNT THAT ADMITS WHAT IT MISSED. A bare "22 files" cannot distinguish "the
+    // index read every folder" from "one folder would not answer and was skipped" -
+    // and I spent real time treating a completed index as evidence that every share
+    // responded promptly. It was not evidence; it was silence.
+    files.title = '';
+    if (!st.building && st.built && st.timedOutDirs > 0) {
+      files.textContent += ' ⚠';
+      files.title = `${st.timedOutDirs} folder(s) did not respond in time and were skipped.`
+        + '\nCloud-synced folders (OneDrive, iCloud) can do this on first access.'
+        + '\nRescan once they have finished syncing.';
+    }
   }
   if (size) size.textContent = st.built && !st.building ? fmtBytes(st.totalBytes) : '';
   if (btn) { btn.disabled = !!st.building; btn.textContent = st.building ? 'Scanning…' : 'Rescan'; }
