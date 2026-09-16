@@ -672,8 +672,21 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
       } catch (e) {
-        btnWaveFolder.textContent = 'Could not create it';
+        // SHOW THE ACTUAL ERROR. The generic string here is what Eddie saw when the
+        // handler threw ReferenceError, and it told him - and me - nothing: a thrown
+        // exception and a failed mkdir looked identical. Surfacing the real message
+        // would have named the bug on the first click.
+        const msg = (e && (e.message || String(e))) || 'unknown error';
+        // Truncated for the button, complete in the tooltip. No regex tidying of
+        // Electron's "Error invoking remote method" prefix: the version of this line
+        // that did it contained an ODD NUMBER OF APOSTROPHES inside a regex literal,
+        // which desynchronised check-renderer-scope's string blanker and made the
+        // guard lose its bearings in this very file. Hardened below - but the prefix
+        // is not worth a regex anyway.
+        btnWaveFolder.textContent = msg.slice(0, 58);
+        btnWaveFolder.title = msg;
         btnWaveFolder.disabled = false;
+        console.error('[dock] createWaveFolder failed:', e);
         return;
       }
       await refreshCloudCard();

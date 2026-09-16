@@ -33,6 +33,13 @@ src = src
   .replace(/\/\*[\s\S]*?\*\//g, blank)
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + blank(m.slice(p1.length)))
   .replace(/`(?:\\[\s\S]|[^\\`])*`/g, blank)
+  // REGEX LITERALS FIRST. A quote inside a regex - /'[^']*'/ - is not a string
+  // delimiter, but a naive blanker pairs it with the next real quote and loses
+  // track of the whole file from there. That happened for real in v3.12.1: the
+  // guard reported "could not locate the three regions" on a file whose regions
+  // were perfectly intact. Failing loudly was lucky; the same desync could just as
+  // easily have blanked a genuine violation and passed.
+  .replace(/(^|[=(,:[!&|?{};+\-*/%<>~^\s])\/(?![*/])(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^\/\\\n])+\/[gimsuyd]*/g, (m, p1) => p1 + blank(m.slice(p1.length)))
   .replace(/'(?:\\.|[^\\'])*'/g, blank)
   .replace(/"(?:\\.|[^\\"])*"/g, blank);
 

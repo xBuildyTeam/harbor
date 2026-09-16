@@ -36,6 +36,20 @@ const SETTINGS_SCHEMA = {
   // dock by default so a screen recording does not leak them. Default false
   // means "hidden" - the safe state has to be the one you get by doing nothing.
   revealLocalDetails: (v) => v === true,
+  // THE SIXTH SILENT-DROP OF THIS EXACT FAMILY, and the first one a guard caught
+  // before Eddie did. Introduced in v3.11.0 and dead ever since: saveSettingsData
+  // REFUSES keys absent from this schema, so the Wave OS folder path was never
+  // persisted at all.
+  //
+  // WHY IT WAS INVISIBLE FOR THREE RELEASES: the card falls back to "the first
+  // read-write folder" when the stored path is missing, so it displayed the right
+  // location the whole time. The DISPLAY worked while the STORAGE silently failed -
+  // which meant `previous` was permanently null, so Change-location could never
+  // un-share the old folder and Remove always answered "No Wave OS folder is set".
+  //
+  // The schema guard did its job perfectly and logged a REFUSING line on every
+  // save. Nobody reads a console. A warning nothing acts on is not a guard.
+  waveFolderPath: (v) => v || null,
 };
 
 const SETTINGS_KEYS = Object.keys(SETTINGS_SCHEMA);
@@ -432,6 +446,20 @@ function registerIpcHandlers({
   // not consent. The picker opens ON Documents, so the old behaviour is still one
   // click away, but it is now the user's click.
   ipcMain.handle('cloud:createWaveFolder', async () => {
+    // DECLARED, at last. v3.12.0 used `previous` five times and declared it zero
+    // times: the two lines that defined it were supposed to be inserted by a
+    // find-and-replace whose anchor no longer matched, and str.replace SILENTLY
+    // NO-OPS on a miss while my patch script printed success anyway. So the *uses*
+    // landed and the *declaration* did not, and every click threw
+    // "ReferenceError: previous is not defined" before the picker could open.
+    //
+    // The comment fifteen lines below this one warns, in these words, that a bare
+    // undeclared identifier throws even inside a ternary test. I then shipped
+    // exactly that, in a ternary, directly underneath it. Knowing the failure mode
+    // is not the same as having a check for it - hence the new handler-invocation
+    // suite, which calls this function for real instead of trusting that it parses.
+    const stPre = getSettingsData() || {};
+    const previous = stPre.waveFolderPath || null;
     const documents = app.getPath('documents');
     // No parent window, matching the existing settings:pickFolder call below.
     // getDockWindow does not exist in this module - and note that `getDockWindow ? …`

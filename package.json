@@ -1,6 +1,6 @@
 {
   "name": "harbor",
-  "version": "3.12.0",
+  "version": "3.12.1",
   "description": "Harbor \u2014 secure local file access and local AI for Wave OS",
   "main": "electron/main.js",
   "scripts": {
@@ -9,7 +9,8 @@
     "build": "electron-builder --win nsis msi",
     "build:portable": "electron-builder --win portable",
     "check:scope": "node scripts/check-renderer-scope.js",
-    "check:ipc-scope": "node scripts/check-ipc-scope.js"
+    "check:ipc-scope": "node scripts/check-ipc-scope.js",
+    "check:handlers": "node scripts/check-handlers.js"
   },
   "build": {
     "appId": "io.oswave.harbor",
