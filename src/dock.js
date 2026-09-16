@@ -129,9 +129,19 @@ async function refreshCloudCard() {
       write.style.textDecoration = 'none';
     }
   }
-  // The button disappears once the folder exists rather than sitting there doing
-  // nothing, which is what "Create" would mean on a second press.
-  if (btnWave) btnWave.style.display = (st.paired && !st.waveFolder) ? '' : 'none';
+  // NEVER HIDE IT - v3.11.1 hid this button once a folder existed, reasoning that
+  // "Create" would be meaningless on a second press. True, but hiding it left NO
+  // WAY to move or disconnect the folder: Eddie ended up with a Wave OS folder
+  // stuck in OneDrive and nothing in the UI could change it. The right answer was
+  // to relabel the button, not remove it. A settings surface that can reach a state
+  // it cannot leave is a worse bug than a button with a stale label.
+  const rowWave = document.getElementById('row-wave-folder');
+  const btnRemove = document.getElementById('btn-wave-remove');
+  if (rowWave) rowWave.style.display = st.paired ? 'flex' : 'none';
+  if (btnWave && !btnWave.disabled) {
+    btnWave.textContent = st.waveFolder ? 'Change location…' : 'Choose where Wave OS saves files…';
+  }
+  if (btnRemove) btnRemove.style.display = st.waveFolder ? '' : 'none';
   if (reach) {
     // THREE DISTINCT STATES, not two. "This PC only" and "not paired" are
     // different situations with different fixes, and collapsing them is the
@@ -648,8 +658,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Cancelling the picker is not a failure and must not read as one - restore
         // the button and say nothing.
         if (r && r.canceled) {
-          btnWaveFolder.textContent = 'Choose where Wave OS saves files…';
+          // refreshCloudCard restores the correct label for the current state, so
+          // cancelling cannot leave "Change location…" reading as "Choose…".
           btnWaveFolder.disabled = false;
+          await refreshCloudCard();
           return;
         }
         if (!r || !r.ok) {
@@ -664,6 +676,35 @@ document.addEventListener('DOMContentLoaded', () => {
         btnWaveFolder.disabled = false;
         return;
       }
+      await refreshCloudCard();
+    });
+  }
+
+  const btnWaveRemove = document.getElementById('btn-wave-remove');
+  if (btnWaveRemove) {
+    btnWaveRemove.addEventListener('click', async () => {
+      if (!window.electronAPI || !window.electronAPI.removeWaveFolder) return;
+      // TWO PRESSES, NO MODAL. Withdrawing access is reversible and deletes
+      // nothing, so a full confirmation dialog would be heavier than the action
+      // deserves - but it should still not fire on a stray single click.
+      if (btnWaveRemove.dataset.confirm !== '1') {
+        btnWaveRemove.dataset.confirm = '1';
+        btnWaveRemove.textContent = 'Sure?';
+        btnWaveRemove.title = 'Press again to stop saving here. Your files are not deleted.';
+        setTimeout(() => {
+          if (btnWaveRemove.dataset.confirm === '1') {
+            btnWaveRemove.dataset.confirm = '';
+            btnWaveRemove.textContent = 'Remove';
+          }
+        }, 4000);
+        return;
+      }
+      btnWaveRemove.dataset.confirm = '';
+      btnWaveRemove.disabled = true;
+      btnWaveRemove.textContent = 'Removing…';
+      try { await window.electronAPI.removeWaveFolder(); } catch (e) {}
+      btnWaveRemove.disabled = false;
+      btnWaveRemove.textContent = 'Remove';
       await refreshCloudCard();
     });
   }

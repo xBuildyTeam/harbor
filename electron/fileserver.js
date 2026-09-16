@@ -441,6 +441,70 @@ function send(res, status, obj) {
   res.end(body);
 }
 
+// A DIRECTORY READ THAT CANNOT HANG FOREVER.
+//
+// THE REASON THIS IS ASYNC, and it is the whole point: you CANNOT put a timeout
+// around fs.readdirSync. A synchronous call blocks the event loop, so the timer
+// that would fire the timeout cannot run until the very call it was meant to
+// interrupt has already finished. A setTimeout wrapped around sync I/O is
+// theatre - it looks like a guard in the diff and guards nothing.
+//
+// fs.promises.readdir runs on the threadpool and leaves the loop free, so
+// Promise.race genuinely resolves first. Making it async IS the fix; the timeout
+// is just what the fix makes possible.
+//
+// What can actually block: a OneDrive/iCloud placeholder being hydrated on
+// demand, a disconnected network drive, a spun-down external disk. None of those
+// are hypothetical on a home PC, and a request that never answers reaches the
+// caller as a bare gateway timeout with nothing explaining it.
+const LIST_TIMEOUT_MS = 8000;
+
+async function listDirectory(dir, res) {
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('LIST_TIMEOUT')), LIST_TIMEOUT_MS));
+  let entries;
+  try {
+    const st = await Promise.race([fs.promises.stat(dir), timeout]);
+    if (!st.isDirectory()) return send(res, 400, { error: 'Not a directory' });
+    entries = await Promise.race([fs.promises.readdir(dir, { withFileTypes: true }), timeout]);
+  } catch (e) {
+    if (e && e.message === 'LIST_TIMEOUT') {
+      // 504 and a REASON, rather than letting it surface as an unexplained 502
+      // further up the chain. A timeout that says which folder and why is
+      // debuggable; a bare gateway error is not.
+      return send(res, 504, {
+        error: 'The folder did not respond in time',
+        path: dir,
+        timeoutMs: LIST_TIMEOUT_MS,
+        hint: 'A cloud-synced placeholder, a disconnected network drive, or a sleeping external disk can all do this.',
+      });
+    }
+    if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return send(res, 404, { error: 'Not found' });
+    return send(res, 403, { error: 'Cannot read directory' });
+  }
+
+  // Child stats are capped as ONE budget rather than per-entry: a folder of 500
+  // placeholders could otherwise take 500 x the timeout while each individual
+  // call stayed under it. Entries past the budget are still listed, just without
+  // size or mtime - a listing missing two columns beats no listing at all.
+  const deadline = Date.now() + LIST_TIMEOUT_MS;
+  const items = [];
+  for (const d of entries) {
+    const full = path.join(dir, d.name);
+    let size = 0, mtime = null, incomplete = false;
+    if (Date.now() < deadline) {
+      try {
+        const st = await fs.promises.stat(full);
+        size = st.size; mtime = st.mtime.toISOString();
+      } catch (e) { /* unreadable child: report it with zeroes rather than failing the listing */ }
+    } else {
+      incomplete = true;
+    }
+    items.push({ name: d.name, path: full, isDir: d.isDirectory(), size, mtime, incomplete });
+  }
+  return send(res, 200, { path: dir, items });
+}
+
 function handle(req, res, scope, getConfig) {
   const cfg = getConfig() || {};
   // Set via setHeader BEFORE any writeHead, because Node merges setHeader values
@@ -770,29 +834,10 @@ function handle(req, res, scope, getConfig) {
   if (route === '/list' || route === '/read-dir') {
     const dir = resolveForScope(url.searchParams.get('path'), scope, cfg.folders);
     if (!dir) return send(res, 403, { error: scope === 'local' ? 'Path could not be resolved' : 'Path is not inside a shared folder' });
-    let stat;
-    try {
-      stat = fs.statSync(dir);
-    } catch (e) {
-      return send(res, 404, { error: 'Not found' });
-    }
-    if (!stat.isDirectory()) return send(res, 400, { error: 'Not a directory' });
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (e) {
-      return send(res, 403, { error: 'Cannot read directory' });
-    }
-    const items = entries.map(d => {
-      const full = path.join(dir, d.name);
-      let size = 0, mtime = null;
-      try {
-        const st = fs.statSync(full);
-        size = st.size; mtime = st.mtime.toISOString();
-      } catch (e) { /* unreadable child: report it with zeroes rather than failing the listing */ }
-      return { name: d.name, path: full, isDir: d.isDirectory(), size, mtime };
-    });
-    return send(res, 200, { path: dir, items });
+    // Fire and forget: listDirectory sends its own response. handle() returning
+    // first is fine - nothing downstream depends on it.
+    listDirectory(dir, res);
+    return;
   }
 
   if (route === '/stream') {
@@ -897,6 +942,7 @@ function localServerStatus() {
 }
 
 module.exports = {
+  listDirectory, LIST_TIMEOUT_MS,
   resolveForWrite, writableRoots, MAX_WRITE_BYTES,
   startFileServer, stopFileServer, fileServerStatus, resolveShared, isInside, DEFAULT_PORT,
   contentTypeFor, resolveLocal, resolveForScope, LOCAL_PORT, localServerStatus,

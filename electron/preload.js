@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fitDockHeight: (h) => ipcRenderer.invoke('dock:fitHeight', h),
   createWaveFolder: () => ipcRenderer.invoke('cloud:createWaveFolder'),
   openWaveFolder: () => ipcRenderer.invoke('cloud:openWaveFolder'),
+  removeWaveFolder: () => ipcRenderer.invoke('cloud:removeWaveFolder'),
   setFolderPermission: (p, perm) => ipcRenderer.invoke('cloud:setFolderPermission', p, perm),
   getPrivacy: () => ipcRenderer.invoke('privacy:get'),
   setPrivacy: (v) => ipcRenderer.invoke('privacy:set', v),

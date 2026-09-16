@@ -441,11 +441,16 @@ function registerIpcHandlers({
     // this file has nearly shipped a cross-scope ReferenceError that node --check
     // cannot see (v3.5.2 was the first).
     const picked = await dialog.showOpenDialog({
-      title: 'Where should Wave OS keep your files?',
-      // Said in the dialog itself rather than only in the card afterwards, because
-      // this is the moment the decision is actually being made.
-      message: 'A folder named "Wave OS" will be created here. Wave OS will be able to save into it, and only into it.',
-      defaultPath: documents,
+      // THE EXPLANATION LIVES IN THE TITLE, not in `message`. showOpenDialog's
+      // `message` option is macOS-ONLY - on Windows it is silently ignored, so
+      // v3.11.1 "said it in the dialog" and Eddie was never shown a word of it.
+      // Exactly the failure this whole thread is about: information that exists
+      // in the code and never reaches the person.
+      title: previous
+        ? 'Pick a new location for your Wave OS folder — existing files stay where they are'
+        : 'Pick where Wave OS should keep your files — a "Wave OS" folder is created here',
+      // Opens on the CURRENT folder when changing, so it is obvious where it is now.
+      defaultPath: previous || documents,
       buttonLabel: 'Use this location',
       properties: ['openDirectory', 'createDirectory'],
     });
@@ -482,6 +487,23 @@ function registerIpcHandlers({
     } else {
       folders.push({ path: target, name: 'Wave OS', label: 'Wave OS', permissions: 'read-write' });
     }
+    // UN-SHARE THE OLD ONE. Without this, changing location left the previous
+    // folder shared and writable forever with no way to reach it in the UI - which
+    // is the dead end Eddie hit: a Wave OS folder stuck in OneDrive that nothing
+    // could disconnect.
+    //
+    // FILES ARE NOT MOVED, deliberately. Moving someone's documents as a side
+    // effect of changing a setting is how data gets lost, and a half-finished move
+    // is worse than none. The dialog title says so before they choose.
+    let unshared = null;
+    if (previous && previous !== target) {
+      const before = folders.length;
+      for (let i = folders.length - 1; i >= 0; i--) {
+        if (folders[i] && folders[i].path === previous) folders.splice(i, 1);
+      }
+      if (folders.length !== before) unshared = previous;
+    }
+
     // Remember it so the card can name THIS folder rather than assuming Documents.
     saveSettingsData({ sharedFolders: folders, waveFolderPath: target });
     reindex().catch((e) => console.error('[harbor] reindex after createWaveFolder failed:', e && e.message));
@@ -490,7 +512,22 @@ function registerIpcHandlers({
     // that shared_folders.permissions accepts 'read-write' and round-trips - the
     // same read-back check that caught `label` being silently dropped in v3.3.0.
     const sync = await sendHeartbeat(true);
-    return { ok: true, path: target, synced: !!(sync && sync.ok) };
+    return { ok: true, path: target, previous: unshared, changed: !!unshared, synced: !!(sync && sync.ok) };
+  });
+
+  // STOP SAVING TO THE PC WITHOUT DELETING ANYTHING. The folder and every file in
+  // it stay exactly where they are; only the grant is withdrawn. Revoking access
+  // must never be able to destroy data - otherwise nobody dares click it.
+  ipcMain.handle('cloud:removeWaveFolder', async () => {
+    const st = getSettingsData();
+    const target = st.waveFolderPath;
+    if (!target) return { ok: false, error: 'No Wave OS folder is set' };
+    const folders = (Array.isArray(st.sharedFolders) ? st.sharedFolders : [])
+      .filter(f => f && f.path !== target);
+    saveSettingsData({ sharedFolders: folders, waveFolderPath: null });
+    reindex().catch((e) => console.error('[harbor] reindex after removeWaveFolder failed:', e && e.message));
+    const sync = await sendHeartbeat(true);
+    return { ok: true, path: target, filesKept: true, synced: !!(sync && sync.ok) };
   });
 
   // So "where is it?" is answerable by clicking, not by reading a tooltip.
