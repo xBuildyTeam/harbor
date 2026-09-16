@@ -54,6 +54,39 @@ function saveState(state) {
   }
 }
 
+const MIN_DOCK_HEIGHT = 360;
+
+// Sizes the dock to its own content, so adding a card never again hides it below
+// the fold. Registered here rather than in ipc-handlers.js because dockWindow is
+// module scope in THIS file.
+ipcMain.handle('dock:fitHeight', (event, contentHeight) => {
+  if (!dockWindow || dockWindow.isDestroyed()) return { ok: false };
+  if (!Number.isFinite(contentHeight) || contentHeight <= 0) return { ok: false };
+  const b = dockWindow.getBounds();
+  // Nearest display, not primary: on a two-monitor desk the dock may well be on
+  // the second one, and clamping to the primary's work area would size it for the
+  // wrong screen.
+  const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea;
+  const margin = 20;
+  const maxH = Math.max(MIN_DOCK_HEIGHT, wa.height - margin);
+  const target = Math.min(Math.max(Math.ceil(contentHeight), MIN_DOCK_HEIGHT), maxH);
+  // A few pixels of hysteresis. Without it, a sub-pixel layout difference on every
+  // poll would resize the window continuously and it would visibly shiver.
+  if (Math.abs(b.height - target) < 4) return { ok: true, height: b.height, unchanged: true };
+
+  // GROW UPWARDS, keeping the bottom edge where it is. This is a bottom-anchored
+  // dock, so growing downwards would push the newest cards off the bottom of the
+  // screen - the same class of failure as skipTaskbar putting the whole window
+  // somewhere the user cannot reach.
+  let newY = b.y + (b.height - target);
+  if (newY < wa.y + 10) newY = wa.y + 10;
+  if (newY + target > wa.y + wa.height) newY = Math.max(wa.y, wa.y + wa.height - target);
+  dockWindow.setBounds({ x: b.x, y: newY, width: b.width, height: target });
+  // clamped:true means the content is genuinely taller than the screen, and the
+  // .content-area's own scrolling is doing the rest. That is correct, not a failure.
+  return { ok: true, height: target, clamped: target === maxH };
+});
+
 // Create Dock Window (floating, frameless, bottom-right)
 function createDockWindow() {
   const state = loadState();
@@ -61,7 +94,18 @@ function createDockWindow() {
   const { x, y, width, height } = primaryDisplay.workArea;
 
   const dockWidth = 420;
-  const dockHeight = 640;
+  // A STARTING GUESS, NOT THE TRUTH. This was 640 and had to be bumped by hand
+  // every time a card was added - browser access in v3.7.0, Your Cloud in v3.10.0,
+  // the saving row and its button in v3.11.0 - and each time it silently hid the
+  // newest thing below the fold. The .content-area scrolls, so nothing was
+  // unreachable, but a card you have to go looking for is a card most people never
+  // find. The renderer now measures its own content and corrects this within a
+  // frame (dock:fitHeight below), so this value only has to be close enough to
+  // avoid a visible jump.
+  //
+  // Clamped to the work area: a fixed 880 would overflow a 768px laptop screen and
+  // reintroduce the same problem on smaller displays.
+  const dockHeight = Math.min(880, Math.max(420, height - 40));
 
   // Default to bottom-right position
   let dockX = x + width - dockWidth - 20;

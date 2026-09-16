@@ -1,4 +1,4 @@
-const { ipcMain, app, dialog } = require('electron');
+const { ipcMain, app, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -396,8 +396,16 @@ function registerIpcHandlers({
       // Reported as a COUNT and a PATH, not a boolean, so the card can say which
       // folder is writable rather than just that one is.
       writableCount: (cfg.folders || []).filter(f => f && f.permissions === 'read-write').length,
-      waveFolder: (cfg.folders || []).some(f => f && f.path === path.join(app.getPath('documents'), 'Wave OS'))
-        ? path.join(app.getPath('documents'), 'Wave OS') : null,
+      // Read from the STORED path, never recomputed from Documents. v3.11.0 derived
+      // it by assuming the location, so a folder anywhere else would have reported
+      // as "no Wave OS folder" while being perfectly writable - a card disagreeing
+      // with the thing it describes.
+      waveFolder: (() => {
+        const stored = (getSettingsData() || {}).waveFolderPath;
+        if (stored && (cfg.folders || []).some(f => f && f.path === stored)) return stored;
+        const rw = (cfg.folders || []).find(f => f && f.permissions === 'read-write');
+        return rw ? rw.path : null;
+      })(),
     };
   });
 
@@ -412,18 +420,60 @@ function registerIpcHandlers({
   // Documents/, not Desktop/ or a new root: it is where an OS already puts
   // documents and spreadsheets, so it is where a user looks for them outside
   // Wave OS.
+  // THE WAVE OS FOLDER. Eddie's design, and better than a per-folder read-write
+  // toggle as the primary path: one obvious place that Wave OS may write, created
+  // deliberately, instead of making a folder full of existing work like Dev Projects
+  // writable by a remote app.
+  //
+  // v3.11.1 ASKS INSTEAD OF DECIDING. v3.11.0 silently created it in Documents and
+  // told the user nothing - the path existed only in a tooltip. A folder appearing
+  // somewhere you did not choose, made writable from the internet, is precisely the
+  // thing that should never be a surprise, and "it defaulted somewhere sensible" is
+  // not consent. The picker opens ON Documents, so the old behaviour is still one
+  // click away, but it is now the user's click.
   ipcMain.handle('cloud:createWaveFolder', async () => {
-    const target = path.join(app.getPath('documents'), 'Wave OS');
+    const documents = app.getPath('documents');
+    // No parent window, matching the existing settings:pickFolder call below.
+    // getDockWindow does not exist in this module - and note that `getDockWindow ? …`
+    // would NOT have been a safe guard either: a bare undeclared identifier throws
+    // ReferenceError even inside a ternary test. Only `typeof x !== 'undefined'` is
+    // safe, and the honest fix is simply not to reference it. This is the third time
+    // this file has nearly shipped a cross-scope ReferenceError that node --check
+    // cannot see (v3.5.2 was the first).
+    const picked = await dialog.showOpenDialog({
+      title: 'Where should Wave OS keep your files?',
+      // Said in the dialog itself rather than only in the card afterwards, because
+      // this is the moment the decision is actually being made.
+      message: 'A folder named "Wave OS" will be created here. Wave OS will be able to save into it, and only into it.',
+      defaultPath: documents,
+      buttonLabel: 'Use this location',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (picked.canceled || !picked.filePaths || !picked.filePaths.length) {
+      return { ok: false, canceled: true };
+    }
+    const parent = picked.filePaths[0];
+
+    if (isRefusedWaveParent(parent)) {
+      return { ok: false, error: 'Pick a normal folder — not a drive root or a Windows system folder.' };
+    }
+
+    // Do not nest a Wave OS inside a Wave OS if they navigated into an existing one.
+    const target = path.basename(parent).toLowerCase() === 'wave os'
+      ? parent
+      : path.join(parent, 'Wave OS');
+
     try {
       fs.mkdirSync(target, { recursive: true });
     } catch (e) {
       return { ok: false, error: (e && e.message) || 'Could not create the folder' };
     }
+
     const st = getSettingsData();
     const folders = Array.isArray(st.sharedFolders) ? st.sharedFolders.slice() : [];
     const existing = folders.find(f => f && f.path === target);
     if (existing) {
-      // Idempotent, and it REPAIRS rather than duplicating: if the folder was
+      // Idempotent, and it REPAIRS rather than duplicating: if this folder was
       // shared read-only by hand earlier, this promotes it instead of adding a
       // second entry pointing at the same path.
       existing.permissions = 'read-write';
@@ -432,15 +482,25 @@ function registerIpcHandlers({
     } else {
       folders.push({ path: target, name: 'Wave OS', label: 'Wave OS', permissions: 'read-write' });
     }
-    saveSettingsData({ sharedFolders: folders });
+    // Remember it so the card can name THIS folder rather than assuming Documents.
+    saveSettingsData({ sharedFolders: folders, waveFolderPath: target });
     reindex().catch((e) => console.error('[harbor] reindex after createWaveFolder failed:', e && e.message));
-    // Awaited, unlike the addFolder case: the whole point of this button is that
-    // Wave OS can save here, and it cannot until the row carries the read-write
-    // permission. Verified 2026-09-15 that shared_folders.permissions accepts
-    // 'read-write' and round-trips - the same read-back check that caught `label`
-    // being silently dropped in v3.3.0.
+    // Awaited: the whole point of this button is that Wave OS can save here, and it
+    // cannot until the row carries the read-write permission. Verified 2026-09-15
+    // that shared_folders.permissions accepts 'read-write' and round-trips - the
+    // same read-back check that caught `label` being silently dropped in v3.3.0.
     const sync = await sendHeartbeat(true);
     return { ok: true, path: target, synced: !!(sync && sync.ok) };
+  });
+
+  // So "where is it?" is answerable by clicking, not by reading a tooltip.
+  ipcMain.handle('cloud:openWaveFolder', async () => {
+    const st = getSettingsData();
+    const target = st.waveFolderPath
+      || (Array.isArray(st.sharedFolders) ? (st.sharedFolders.find(f => f && f.permissions === 'read-write') || {}).path : null);
+    if (!target) return { ok: false, error: 'No Wave OS folder yet' };
+    const err = await shell.openPath(target);
+    return err ? { ok: false, error: err } : { ok: true, path: target };
   });
 
   // Promote or demote any shared folder. Demotion is instant and needs no
@@ -726,6 +786,21 @@ module.exports = {
 // ============================================================
 // FILESYSTEM BRIDGE HANDLERS (v3 — waveDockFS)
 // ============================================================
+// REFUSED PARENTS for the Wave OS folder. Extracted and exported so it can be
+// tested rather than trusted: the folder created below becomes writable over the
+// network, so this is a security-relevant check and inline logic nobody can call is
+// logic nobody verifies. Bounded either way - only the new subfolder is ever
+// writable, never the parent - but C:\Windows\Wave OS is a bad idea a user should
+// be stopped from making rather than merely permitted to regret.
+function isRefusedWaveParent(parent) {
+  if (!parent || typeof parent !== 'string') return true;
+  const lower = parent.toLowerCase().replace(/[\\/]+$/, '');
+  if (lower === '') return true;                    // a bare "C:\" collapses to ""
+  if (/^[a-z]:$/.test(lower)) return true;          // drive root
+  const systemish = ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)', 'c:\\programdata'];
+  return systemish.some(sys => lower === sys || lower.startsWith(sys + '\\'));
+}
+
 function registerFsHandlers(ipcMain, app, shell) {
   const fsPromises = require('fs').promises;
   const pathModule = require('path');
@@ -860,5 +935,6 @@ function registerAiHandlers(ipcMain) {
 }
 
 // Self-registering: call at bottom of registerIpcHandlers or export for main.js
+module.exports.isRefusedWaveParent = isRefusedWaveParent;
 module.exports.registerFsHandlers = registerFsHandlers;
 module.exports.registerAiHandlers = registerAiHandlers;

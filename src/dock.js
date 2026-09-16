@@ -48,6 +48,36 @@ let grantCountdownTimer = null;
 // from the DOMContentLoaded body AND from initPairing's poll, which are two
 // separate top-level scopes. A closure here would be a ReferenceError that
 // node --check cannot see.
+// THE MEASUREMENT TRAP, and it is why this is not a one-liner:
+// dock.css sets `html { height: 100%; overflow: hidden }`, so
+// documentElement.scrollHeight is ALWAYS exactly the window height and reports the
+// content as fitting no matter how much is hidden. Measuring the document would
+// therefore "prove" the window is already big enough - a check that can only ever
+// agree with itself, the same shape as the pairing card that reported its own
+// startup snapshot forever.
+//
+// So measure the SCROLLING element and add back the chrome around it. Deriving the
+// chrome from innerHeight - clientHeight means the title bar and padding are never
+// hardcoded, so restyling them cannot silently break this.
+function measureDockHeight() {
+  const ca = document.querySelector('.content-area');
+  if (!ca) return null;
+  const chrome = window.innerHeight - ca.clientHeight;
+  if (!Number.isFinite(chrome) || chrome < 0) return null;
+  return Math.ceil(ca.scrollHeight + chrome + 2);   // +2 so a fractional layout does not clip the last border
+}
+
+let lastFitHeight = 0;
+function fitDockHeight() {
+  const h = measureDockHeight();
+  if (!h) return;
+  if (Math.abs(h - lastFitHeight) < 4) return;      // matches the main-process hysteresis
+  lastFitHeight = h;
+  if (window.electronAPI && window.electronAPI.fitDockHeight) {
+    window.electronAPI.fitDockHeight(h).catch(() => {});
+  }
+}
+
 function fmtBytes(n) {
   if (!n || n < 0) return '0 B';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -80,9 +110,24 @@ async function refreshCloudCard() {
   if (write) {
     // THREE STATES again, because "no writable folder" and "the Wave OS folder is
     // ready" are different situations and only one of them needs a button.
-    if (st.waveFolder) { write.textContent = 'Wave OS folder'; write.title = st.waveFolder; }
+    if (st.waveFolder) {
+      // SHOW THE PATH, do not merely have it. v3.11.0 put the location in a title
+      // tooltip, which is invisible - so a folder was created somewhere the user was
+      // never told about. The last two segments fit the card and identify the place;
+      // the full path is still on hover and one click opens it.
+      const parts = st.waveFolder.split(/[\\/]/).filter(Boolean);
+      write.textContent = parts.slice(-2).join(' \u203a ') || st.waveFolder;
+      write.title = st.waveFolder + '  (click to open)';
+      write.style.cursor = 'pointer';
+      write.style.textDecoration = 'underline dotted';
+    }
     else if (st.writableCount > 0) { write.textContent = st.writableCount + ' folder' + (st.writableCount === 1 ? '' : 's'); write.title = 'Folders you marked read-write'; }
-    else { write.textContent = 'Off — nothing writable'; write.title = 'Create the Wave OS folder to let Wave OS save documents here'; }
+    else {
+      write.textContent = 'Off — nothing writable';
+      write.title = 'Choose a Wave OS folder to let Wave OS save documents here';
+      write.style.cursor = 'default';
+      write.style.textDecoration = 'none';
+    }
   }
   // The button disappears once the folder exists rather than sitting there doing
   // nothing, which is what "Create" would mean on a second press.
@@ -583,14 +628,30 @@ document.addEventListener('DOMContentLoaded', () => {
   // Cloud card. No search wiring: the search UI belonged in File Manager, not in a
   // 400px dock panel, so v3.10.1 removed it rather than leaving a second place to
   // look for a file.
+  const lblCloudWrite = document.getElementById('lbl-cloud-write');
+  if (lblCloudWrite) {
+    lblCloudWrite.addEventListener('click', async () => {
+      if (lblCloudWrite.style.cursor !== 'pointer') return;
+      if (!window.electronAPI || !window.electronAPI.openWaveFolder) return;
+      try { await window.electronAPI.openWaveFolder(); } catch (e) {}
+    });
+  }
+
   const btnWaveFolder = document.getElementById('btn-wave-folder');
   if (btnWaveFolder) {
     btnWaveFolder.addEventListener('click', async () => {
       if (!window.electronAPI || !window.electronAPI.createWaveFolder) return;
       btnWaveFolder.disabled = true;
-      btnWaveFolder.textContent = 'Creating…';
+      btnWaveFolder.textContent = 'Choose a folder…';
       try {
         const r = await window.electronAPI.createWaveFolder();
+        // Cancelling the picker is not a failure and must not read as one - restore
+        // the button and say nothing.
+        if (r && r.canceled) {
+          btnWaveFolder.textContent = 'Choose where Wave OS saves files…';
+          btnWaveFolder.disabled = false;
+          return;
+        }
         if (!r || !r.ok) {
           // Reported rather than swallowed: a failed mkdir with a re-enabled
           // button looks exactly like a button that does nothing.
@@ -619,6 +680,32 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   refreshCloudCard();
   setInterval(refreshCloudCard, 5000);
+
+  // Watch the CARDS, not the container. .content-area is flex:1 so its own box
+  // never changes size when its contents grow - observing it would fire never.
+  // Observing the cards catches the real cause of a height change: a row appearing,
+  // the Create-Wave-OS-folder button showing or hiding, a long error message
+  // wrapping onto a second line.
+  try {
+    const ro = new ResizeObserver(() => fitDockHeight());
+    document.querySelectorAll('.content-area > *').forEach((el) => ro.observe(el));
+    // And a card being added or removed outright, which a ResizeObserver on the old
+    // set of children cannot see.
+    const ca = document.querySelector('.content-area');
+    if (ca) {
+      new MutationObserver(() => {
+        ca.querySelectorAll(':scope > *').forEach((el) => ro.observe(el));
+        fitDockHeight();
+      }).observe(ca, { childList: true });
+    }
+  } catch (e) {
+    console.warn('[dock] ResizeObserver unavailable, falling back to poll:', e && e.message);
+    setInterval(fitDockHeight, 2000);
+  }
+  // requestAnimationFrame twice: once to let the first layout settle, once for
+  // fonts and the icons that shift row heights when they land.
+  requestAnimationFrame(() => requestAnimationFrame(fitDockHeight));
+  setTimeout(fitDockHeight, 400);
 
   setInterval(checkOllamaStatus, 3000); // Poll Ollama every 3s
   setInterval(checkTunnelStatus, 5000); // Poll Tunnel URL every 5s

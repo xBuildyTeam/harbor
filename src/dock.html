@@ -158,10 +158,10 @@
         </div>
         <div class="card-body">
           <span class="card-subtitle">Saving</span>
-          <span id="lbl-cloud-write" class="card-subtitle">—</span>
+          <span id="lbl-cloud-write" class="card-subtitle" style="cursor:default;">—</span>
         </div>
         <button id="btn-wave-folder" class="settings-btn" style="width:100%; margin-top:6px; display:none;">
-          Create the Wave OS folder
+          Choose where Wave OS saves files&hellip;
         </button>
         <!-- NO SEARCH BOX HERE, deliberately, and it was here in v3.10.0 by mistake.
              Wave OS gets exactly ONE file manager; Harbor is a CONNECTION surface -
@@ -248,7 +248,8 @@
             <p>Harbor keeps a list of the files in your shared folders so Wave OS can find one by name instantly instead of opening folder after folder across the network. The list covers <strong>only your shared folders</strong> &mdash; never the rest of the drive &mdash; and it holds names and sizes, not the contents.</p>
             <p><strong>Files</strong> and the size beside it are what is currently reachable. <strong>Reach</strong> says who can get to it: <em>Anywhere</em> means your other devices can, <em>This PC only</em> means remote access is off, and <em>Not paired</em> means Harbor is not connected to your account yet.</p>
             <p><strong>Rescan</strong> re-reads the folders. Harbor does this by itself when you add a folder and when it starts, so you only need it if you have changed a lot of files outside Wave OS and want the count caught up immediately.</p>
-            <p><strong>Saving works one way round, deliberately.</strong> Folders you share stay <strong>read-only</strong> &mdash; Wave OS can open what is in them but cannot change them. The one exception is the <strong>Wave OS folder</strong>, created by the button on this card: that one is read-write, and it is where documents and spreadsheets you make in Wave OS are saved. It lives in your Documents folder like anything else, so you can open those files on this PC without Wave OS at all.</p>
+            <p><strong>Saving works one way round, deliberately.</strong> Folders you share stay <strong>read-only</strong> &mdash; Wave OS can open what is in them but cannot change them. The one exception is the <strong>Wave OS folder</strong>: that one is read-write, and it is where documents and spreadsheets you make in Wave OS are saved.</p>
+            <p><strong>You choose where it goes.</strong> The button on this card opens a folder picker &mdash; it suggests your Documents folder, but put it on another drive if you prefer. Once created, the card shows the location and clicking it opens the folder, so &ldquo;where are my Wave OS files?&rdquo; is always one click from an answer. They are ordinary files in an ordinary folder, openable on this PC without Wave OS at all.</p>
             <p>Nothing else on the drive can be written to, from anywhere, ever &mdash; not by your phone, not by a browser, not even from this PC. You can mark another shared folder read-write yourself if you want to, and it is off until you do.</p>
             <p class="help-note">Searching and browsing your files happens in Wave OS&rsquo;s File Manager, not here. This card is a status panel &mdash; what is reachable, from where, and what can be saved to. Deleting files is not possible yet from any device.</p>
           </section>
