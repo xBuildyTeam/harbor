@@ -9,6 +9,8 @@
 // This is OPT-IN. Pairing alone must never publish a home PC to the internet;
 // that has to be a decision someone makes on purpose.
 const { spawn } = require('child_process');
+const dns = require('dns');
+const https = require('https');
 const cfbin = require('./cfbin');
 
 const BIN = 'cloud' + 'flared';
@@ -146,10 +148,22 @@ function startWithBinary(resolvedPath, port, timeoutMs, myGen) {
     const onData = (buf) => {
       const text = buf.toString();
       const match = URL_RE.exec(text);
-      if (match && !publicUrl) {
+      if (!match) return;
+      // `!publicUrl` USED TO GUARD THIS, AND THAT WAS A STALE-URL GENERATOR.
+      // The agent can reconnect during its own lifetime and announce a DIFFERENT
+      // hostname; the old guard pinned whatever came first and ignored every
+      // later one, so Harbor went on publishing a hostname that had been retired
+      // - which is precisely what the live row showed on 2026-09-16.
+      // Take the newest announcement always; resolve the promise only once.
+      const first = !publicUrl;
+      if (publicUrl && publicUrl !== match[0]) {
+        console.log(`[harbor] file tunnel hostname changed: ${publicUrl} -> ${match[0]}`);
         publicUrl = match[0];
-        done({ ok: true, url: publicUrl });
+        if (onWatchdogEvent) onWatchdogEvent(publicUrl);   // republish immediately
+        return;
       }
+      publicUrl = match[0];
+      if (first) done({ ok: true, url: publicUrl });
     };
     // The URL is announced on stderr, not stdout. Watch both anyway rather than
     // assuming - a version change that moves it would otherwise look like a hang.
@@ -216,8 +230,88 @@ function gaveUp() {
   return retryIndex >= RETRY_DELAYS_MS.length && !proc && !starting;
 }
 
+// ===========================================================================
+// REACHABILITY, NOT LIVENESS. Added v3.14.0 after a measured failure.
+//
+// The exit handler above clears publicUrl when the child process DIES, and its
+// comment says a dead tunnel "must stop being advertised rather than pointing
+// Wave OS at a hostname that no longer resolves". The intent was right and the
+// DETECTOR was wrong: it measures whether our child process is alive, not
+// whether the hostname still works. The provider can retire a quick tunnel's
+// hostname while the child keeps running perfectly happily. On 2026-09-16
+// xBuildy was heartbeating every 30s, is_online true, connection_mode 'relay',
+// republishing a hostname that had stopped resolving. Every relay call came back
+// 502 and nothing in Harbor could see it.
+//
+// ANY HTTP RESPONSE PROVES REACHABILITY, INCLUDING 401. An unauthenticated GET
+// to the shared server returns 401 Unauthorized, and that answer can only have
+// come from Harbor through the tunnel - so it is a success for this purpose.
+// That is deliberate: probing without a credential means this function never has
+// to handle the device token and cannot leak it into a log or a URL.
+// Only DNS failure, a connection error or a timeout mean unreachable.
+// ===========================================================================
+const VERIFY_INTERVAL_MS = 60000;
+const VERIFY_TIMEOUT_MS = 8000;
+const VERIFY_FAILURES_BEFORE_DEAD = 2;   // one failure can be a transient blip
+let verifyTimer = null;
+let verifyFailures = 0;
+
+function resolveHost(host) {
+  return new Promise((r) => dns.lookup(host, (err) => r(!err)));
+}
+
+async function verifyTunnel(url) {
+  const target = url || publicUrl;
+  if (!target) return { ok: false, reason: 'no_url' };
+  let host;
+  try { host = new URL(target).hostname; } catch (e) { return { ok: false, reason: 'bad_url' }; }
+  if (!(await resolveHost(host))) return { ok: false, reason: 'dns_failed', host };
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const req = https.get(target, { timeout: VERIFY_TIMEOUT_MS }, (res) => {
+      res.resume();                                  // drain, we only need the status
+      finish({ ok: true, status: res.statusCode, host });
+    });
+    req.on('timeout', () => { req.destroy(); finish({ ok: false, reason: 'timeout', host }); });
+    req.on('error', (e) => finish({ ok: false, reason: 'connect_failed', detail: e.message, host }));
+  });
+}
+
+// Clears publicUrl after repeated failure so the HEARTBEAT STOPS ADVERTISING A
+// CORPSE, and kills the child so the existing watchdog sees !proc and restarts.
+// NOTE this reports the REACHABILITY axis only. It deliberately does NOT touch
+// is_sharing, which answers a different question - whether folders are shared -
+// and was left alone in v3.12.4 for exactly that reason.
+function startVerifyMonitor(notify) {
+  if (notify) onWatchdogEvent = notify;
+  if (verifyTimer) return;
+  verifyFailures = 0;
+  verifyTimer = setInterval(async () => {
+    if (!publicUrl || starting) return;
+    const r = await verifyTunnel();
+    if (r.ok) { verifyFailures = 0; return; }
+    verifyFailures += 1;
+    console.warn(`[harbor] file tunnel unreachable (${r.reason}), failure `
+      + `${verifyFailures}/${VERIFY_FAILURES_BEFORE_DEAD}: ${publicUrl}`);
+    if (verifyFailures < VERIFY_FAILURES_BEFORE_DEAD) return;
+    console.error(`[harbor] file tunnel declared dead, unpublishing ${publicUrl}`);
+    publicUrl = null;
+    verifyFailures = 0;
+    try { if (proc) proc.kill(); } catch (e) { /* already gone is fine */ }
+    proc = null;
+    if (onWatchdogEvent) onWatchdogEvent(null);       // republish with tunnel_url: null
+  }, VERIFY_INTERVAL_MS);
+}
+
+function stopVerifyMonitor() {
+  if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
+  verifyFailures = 0;
+}
+
 function stopFileTunnel() {
   disarmWatchdog();
+  stopVerifyMonitor();
   // INVALIDATE FIRST, AND BEFORE THE EARLY RETURN. Both lines have to run even
   // when there is no process yet, because "no process yet" is the in-flight-start
   // case this is here to cancel. v3.4.2-v3.6.0 returned {ok:true, already:true}
@@ -232,4 +326,5 @@ function stopFileTunnel() {
   return { ok: true };
 }
 
-module.exports = { startFileTunnel, stopFileTunnel, getUrl, isRunning, isStarting, armWatchdog, disarmWatchdog, gaveUp };
+module.exports = { startFileTunnel, stopFileTunnel, getUrl, isRunning, isStarting, armWatchdog, disarmWatchdog, gaveUp,
+  verifyTunnel, startVerifyMonitor, stopVerifyMonitor, VERIFY_FAILURES_BEFORE_DEAD };

@@ -293,6 +293,7 @@ function registerIpcHandlers({
       // Armed either way: a tunnel that failed at boot because the network was
       // not up yet is the normal case on a cold start, not a permanent failure.
       filetunnel.armWatchdog(r.port, () => sendHeartbeat(true));
+      filetunnel.startVerifyMonitor(() => sendHeartbeat(true));
       await sendHeartbeat(true);
     });
     sendHeartbeat(true);
@@ -370,6 +371,7 @@ function registerIpcHandlers({
       return { ok: false, error: res.error, needsInstall: !!res.needsInstall };
     }
     filetunnel.armWatchdog(srv.port, () => sendHeartbeat(true));
+    filetunnel.startVerifyMonitor(() => sendHeartbeat(true));
     await sendHeartbeat(true); // publish the new hostname without waiting 30s
     return { ok: true, enabled: true, url: res.url };
   });
