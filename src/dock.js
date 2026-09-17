@@ -857,8 +857,25 @@ document.addEventListener('DOMContentLoaded', () => {
         remoteText.textContent = 'On (reconnecting…)';
         remoteText.title = 'Remote access is on but the tunnel is not up yet';
       } else {
-        remoteText.textContent = 'Off — files stay on this PC';
-        remoteText.title = 'Click to allow Wave OS to reach this PC from anywhere';
+        // "Off - files stay on this PC" is true and reads like a settled, healthy
+        // choice. On a machine that has ALREADY shared a folder it is neither: those
+        // folders are advertised to Wave OS, which offers them and then fails with a
+        // bare 502, because a device with no tunnel has no address for the relay to
+        // dial. The row that describes remote access is the only place that knows both
+        // halves, so it is the only place that can say what "off" actually costs.
+        let shared = 0;
+        if (api.listSharedFolders) {
+          try { shared = ((await api.listSharedFolders()) || []).length; } catch (e) { shared = 0; }
+        }
+        if (shared > 0) {
+          remoteText.textContent = `Off — ${shared} shared folder${shared === 1 ? '' : 's'} NOT reachable`;
+          remoteText.title = `You have shared ${shared} folder${shared === 1 ? '' : 's'}, but remote access is off, so`
+            + '\nWave OS cannot reach them and will report an error opening them.'
+            + '\n\nClick to turn remote access on. Local files inside Harbor are unaffected.';
+        } else {
+          remoteText.textContent = 'Off — files stay on this PC';
+          remoteText.title = 'Click to allow Wave OS to reach this PC from anywhere';
+        }
       }
     }
 
@@ -868,7 +885,34 @@ document.addEventListener('DOMContentLoaded', () => {
         const cur = await api.getRemoteStatus().catch(() => null);
         if (!cur) return;
         remoteText.textContent = cur.enabled ? 'Turning off…' : 'Starting…';
-        const res = await api.setRemoteEnabled(!cur.enabled).catch(() => null);
+        let res = await api.setRemoteEnabled(!cur.enabled).catch(() => null);
+
+        // INSTALL AT THE POINT OF FAILURE. remote:setEnabled has always returned
+        // needsInstall when the tunnel binary is absent, and this handler RECEIVED THAT
+        // FIELD AND THREW IT AWAY - it printed "Failed" and buried the reason in a
+        // tooltip. The install button existed the whole time, wired to exactly one
+        // place: the LOCAL AI tunnel toggle, on a different card. So on a fresh PC the
+        // only way to make Cloud folders work was to go press an unrelated button in
+        // another section, with nothing anywhere saying so. Harbor has never shipped
+        // the binary, so this is the normal state of every new machine, not an edge
+        // case - measured on A7 and A7_Max, two of three devices, neither of which has
+        // ever had a tunnel.
+        //
+        // Eighth instance of one family: the information existed and never reached a
+        // person. A returned error field that no UI acts on is not a diagnostic.
+        if (res && res.ok === false && res.needsInstall && api.installTunnelBin) {
+          remoteText.textContent = 'Installing tunnel…';
+          remoteText.title = 'Downloading the Cloudflare tunnel (~70MB, no admin rights needed)';
+          const ins = await api.installTunnelBin().catch((e) => ({ ok: false, error: e && e.message }));
+          if (!ins || !ins.ok) {
+            remoteText.textContent = 'Install failed';
+            remoteText.title = (ins && ins.error) || 'Could not install the tunnel binary';
+            return;
+          }
+          remoteText.textContent = 'Starting…';
+          res = await api.setRemoteEnabled(true).catch(() => null);
+        }
+
         if (res && res.ok === false && res.error) {
           remoteText.textContent = 'Failed';
           remoteText.title = res.error;
