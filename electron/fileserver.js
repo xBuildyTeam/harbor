@@ -562,7 +562,41 @@ function handle(req, res, scope, getConfig) {
     // an explicit flag and the default answers 409.
     const overwrite = url.searchParams.get('overwrite') === 'true';
     let existed = false;
-    try { existed = fs.statSync(target).isFile(); } catch (e) { existed = false; }
+    let existingSize = 0;
+    try {
+      const st = fs.statSync(target);
+      existed = st.isFile();
+      existingSize = existed ? st.size : 0;
+    } catch (e) { existed = false; existingSize = 0; }
+
+    // =======================================================================
+    // INTEGRITY CONTRACT. Three OPTIONAL declarations a caller may make about
+    // the bytes it is sending; each one Harbor can check for itself, and every
+    // check runs BEFORE the rename, so a failed check leaves the original file
+    // exactly as it was.
+    //
+    // Why Harbor and not only the caller: on 2026-09-16 the relay was measured
+    // writing the BASE64 TEXT of a payload instead of the payload - a 523-byte
+    // file arrived as its 700-character base64 transcript, first byte 0x89
+    // replaced by 0x69, the ascii 'i' of "iVBOR..." - and Harbor returned 201
+    // because every byte it was handed was written faithfully. Harbor was not
+    // wrong, it was UNINFORMED: nothing in the request said what the bytes were
+    // meant to be. These parameters let a caller say so, which turns silent
+    // corruption into a 400 at the last hop before the disk.
+    //
+    // All three are OPTIONAL so existing callers keep working unchanged. A
+    // caller that declares nothing gets exactly the old behaviour.
+    // =======================================================================
+    const wantBytes  = url.searchParams.has('bytes')  ? parseInt(url.searchParams.get('bytes'), 10)  : null;
+    const wantSha    = (url.searchParams.get('sha256') || '').trim().toLowerCase() || null;
+    const allowEmpty = url.searchParams.get('allowEmpty') === 'true';
+
+    if (wantBytes !== null && (!Number.isInteger(wantBytes) || wantBytes < 0)) {
+      return send(res, 400, { error: 'bytes must be a non-negative integer', reason: 'bad_declared_bytes' });
+    }
+    if (wantSha !== null && !/^[0-9a-f]{64}$/.test(wantSha)) {
+      return send(res, 400, { error: 'sha256 must be 64 hex characters', reason: 'bad_declared_sha256' });
+    }
     if (existed && !overwrite) {
       return send(res, 409, { error: 'File exists', path: target, hint: 'Pass overwrite=true to replace it.' });
     }
@@ -583,6 +617,9 @@ function handle(req, res, scope, getConfig) {
 
     let bytes = 0;
     let failed = false;
+    // Hashed incrementally as chunks arrive, so verifying a 512MB upload costs
+    // no more memory than verifying a 1KB one.
+    const hasher = wantSha ? crypto.createHash('sha256') : null;
     const abort = (status, body) => {
       if (failed) return;
       failed = true;
@@ -593,6 +630,7 @@ function handle(req, res, scope, getConfig) {
 
     req.on('data', (chunk) => {
       bytes += chunk.length;
+      if (hasher) hasher.update(chunk);
       // Enforced on the STREAM, not just on Content-Length: a client may lie about
       // or omit the header, and a cap that trusts a declared value is not a cap.
       if (bytes > MAX_WRITE_BYTES) abort(413, { error: 'File too large', maxBytes: MAX_WRITE_BYTES });
@@ -604,6 +642,60 @@ function handle(req, res, scope, getConfig) {
 
     ws.on('close', () => {
       if (failed) return;
+
+      // ---- 1. THE DATA-LOSS GUARD -------------------------------------------
+      // Replacing a file that HAS content with a body that has NONE is refused
+      // unless the caller says explicitly that it means it. This is the one
+      // check that would have prevented the measured truncation on its own: a
+      // relay call that omitted its content field entirely returned
+      // 200 {ok:true,bytes:0,replaced:true} and destroyed the file. An empty
+      // body is almost always a failed read, an aborted upload or a missing
+      // field - not an intention - and the cost of being wrong is the user's
+      // data. Creating a genuinely empty NEW file is untouched, because there
+      // is nothing to lose.
+      if (bytes === 0 && existed && existingSize > 0 && !allowEmpty) {
+        return abort(400, {
+          error: 'Refusing to replace a non-empty file with an empty one',
+          reason: 'empty_body_would_truncate',
+          existingBytes: existingSize,
+          hint: 'If you really mean to empty this file, pass allowEmpty=true.',
+        });
+      }
+
+      // ---- 2. DECLARED LENGTH ----------------------------------------------
+      // Catches the whole class where a text codec sat in the path: base64 text
+      // written verbatim arrives LONGER than the payload (700 for 523), and a
+      // latin1 string re-encoded as UTF-8 arrives longer by exactly the count of
+      // bytes >= 0x80 (780 for 523). Either way the length moves, so a caller
+      // that declares its length cannot be silently corrupted this way.
+      if (wantBytes !== null && bytes !== wantBytes) {
+        return abort(400, {
+          error: 'Byte count does not match the declared length',
+          reason: 'declared_bytes_mismatch',
+          declaredBytes: wantBytes,
+          receivedBytes: bytes,
+          hint: bytes > wantBytes
+            ? 'The body is LONGER than declared, which is what an encoding or text-codec step in the path looks like.'
+            : 'The body is SHORTER than declared, which is what a truncated or aborted upload looks like.',
+        });
+      }
+
+      // ---- 3. DECLARED DIGEST ----------------------------------------------
+      // The complete check: catches reordering, substitution and single-byte
+      // damage that a length check cannot see.
+      if (hasher) {
+        const got = hasher.digest('hex');
+        if (got !== wantSha) {
+          return abort(400, {
+            error: 'Content hash does not match the declared sha256',
+            reason: 'declared_sha256_mismatch',
+            declaredSha256: wantSha,
+            receivedSha256: got,
+            receivedBytes: bytes,
+          });
+        }
+      }
+
       try {
         fs.renameSync(tmp, target);
       } catch (e) {
@@ -612,6 +704,10 @@ function handle(req, res, scope, getConfig) {
       }
       return send(res, existed ? 200 : 201, {
         ok: true, path: target, bytes, replaced: existed,
+        // Explicit rather than implied: a caller can see whether its bytes were
+        // actually VERIFIED or merely accepted. An ok:true that silently covers
+        // both cases is precisely how the corruption went unnoticed.
+        verified: { bytes: wantBytes !== null, sha256: wantSha !== null },
       });
     });
     return;
