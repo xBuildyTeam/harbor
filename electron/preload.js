@@ -14,12 +14,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getRemoteStatus: () => ipcRenderer.invoke('remote:status'),
   getTunnelBinStatus: () => ipcRenderer.invoke('tunnelbin:status'),
   installTunnelBin: () => ipcRenderer.invoke('tunnelbin:install'),
-  // Browser consent grants - full local read access for a browser that has no
-  // preload bridge, approved by a human typing a code shown in this window.
-  mintLocalGrantCode: () => ipcRenderer.invoke('localgrant:mint'),
-  listLocalGrants: () => ipcRenderer.invoke('localgrant:list'),
-  revokeLocalGrant: (id) => ipcRenderer.invoke('localgrant:revoke', id),
-  revokeAllLocalGrants: () => ipcRenderer.invoke('localgrant:revokeAll'),
   // Bring the Harbor panel forward from the browser window's top bar.
   showDock: () => ipcRenderer.send('window:showDock'),
   detectLocalAi: () => ipcRenderer.invoke('localai:detect'),

@@ -34,16 +34,12 @@ function applyMasks() {
  * Harbor Renderer - Dock Widget Logic
  */
 
-// --- Browser consent grants -------------------------------------------------
-// MODULE SCOPE ON PURPOSE. dock.js has two independent top-level regions, and
-// v3.4.0 declared helpers inside the DOMContentLoaded callback then called them
-// from the initPairing IIFE - a ReferenceError that got mislabelled as a pairing
-// fault and took out the whole remote-access row. Anything reachable from more
-// than one region lives out here.
-let grantCountdownTimer = null;
+// BROWSER CONSENT GRANTS REMOVED IN v3.13.0 - see electron/fileserver.js for why.
+// The countdown timer, the code renderer and the active-grant list are gone with
+// the card they served.
 
-// MODULE SCOPE, same reason as the grant helpers: reachable from the settings
-// modal, the Browser access card, and the dock body.
+// MODULE SCOPE, for the reason given above: reachable from the settings modal
+// and the dock body.
 // MODULE SCOPE, per the v3.4.0 rule that cost a whole feature: these are called
 // from the DOMContentLoaded body AND from initPairing's poll, which are two
 // separate top-level scopes. A closure here would be a ReferenceError that
@@ -188,83 +184,10 @@ function closeHelpModal() {
   if (m) m.classList.remove('show');
 }
 
-function stopGrantCountdown() {
-  if (grantCountdownTimer) { clearInterval(grantCountdownTimer); grantCountdownTimer = null; }
-}
-
-function renderGrantCode(result) {
-  const row = document.getElementById('browser-grant-code-row');
-  const codeEl = document.getElementById('browser-grant-code');
-  const cdEl = document.getElementById('browser-grant-countdown');
-  if (!row || !codeEl || !cdEl) return;
-  if (!result || !result.ok) {
-    row.style.display = 'none';
-    const t = document.getElementById('browser-grant-text');
-    if (t) t.textContent = (result && result.error) ? result.error : 'Could not create a code';
-    return;
-  }
-  codeEl.textContent = result.code;
-  row.style.display = 'flex';
-  stopGrantCountdown();
-  const tick = () => {
-    const left = Math.max(0, Math.round((result.expiresAt - Date.now()) / 1000));
-    cdEl.textContent = left > 0 ? `Expires in ${left}s` : 'Expired — create a new one';
-    if (left <= 0) { stopGrantCountdown(); row.style.display = 'none'; refreshGrants(); }
-  };
-  tick();
-  grantCountdownTimer = setInterval(tick, 1000);
-}
-
-async function refreshGrants() {
-  const row = document.getElementById('browser-grant-active-row');
-  const textEl = document.getElementById('browser-grant-active-text');
-  if (!row || !textEl || !window.electronAPI || !window.electronAPI.listLocalGrants) return;
-  const res = await window.electronAPI.listLocalGrants();
-  const list = (res && res.grants) || [];
-  const dot = document.getElementById('browser-access-dot');
-  if (dot) dot.style.background = list.length ? 'var(--accent, #2dd4a7)' : 'var(--muted, #6b7280)';
-  if (!list.length) {
-    textEl.textContent = 'None';
-    textEl.title = 'No browser has been given local access';
-    row.style.display = 'flex';
-    return;
-  }
-  // Show the soonest expiry, so "allowed" always carries its own deadline rather
-  // than reading as permanent.
-  const soonest = Math.min(...list.map(g => g.expiresInSeconds));
-  const hrs = Math.max(1, Math.round(soonest / 3600));
-  textEl.textContent = `${list.length} allowed — expires in ~${hrs}h — click to revoke`;
-  textEl.title = 'Click to revoke all browser access immediately';
-  row.style.display = 'flex';
-}
-
 document.addEventListener('DOMContentLoaded', () => {
-  // Browser consent wiring. Shown unconditionally: local file access is not a
-  // cloud feature and must not be gated on having paired.
-  const grantRow = document.getElementById('browser-grant-row');
-  const grantText = document.getElementById('browser-grant-text');
-  if (grantRow) grantRow.style.display = 'flex';
-  if (grantText) {
-    grantText.addEventListener('click', async () => {
-      grantText.textContent = 'Creating a code\u2026';
-      const res = await window.electronAPI.mintLocalGrantCode();
-      grantText.textContent = 'Allow another browser\u2026';
-      renderGrantCode(res);
-      await refreshGrants();
-    });
-  }
-  const grantActive = document.getElementById('browser-grant-active-text');
-  if (grantActive) {
-    grantActive.addEventListener('click', async () => {
-      const res = await window.electronAPI.revokeAllLocalGrants();
-      if (res && res.revoked) grantActive.textContent = `Revoked ${res.revoked}`;
-      await refreshGrants();
-    });
-  }
-  refreshGrants();
-
-  // Help, reachable from two places: the Settings modal (as asked) and directly
-  // from the Browser access card, which is where the question actually occurs.
+  // Help, reachable from the Settings modal. It used to also open from the Browser
+  // access card; that card is gone, and btn-browser-help is kept below only so an
+  // older cached dock.html cannot throw on a missing listener.
   const btnHelpOpen = document.getElementById('btn-help-open');
   const btnHelpClose = document.getElementById('btn-help-close');
   const btnBrowserHelp = document.getElementById('btn-browser-help');
@@ -276,11 +199,6 @@ document.addEventListener('DOMContentLoaded', () => {
     helpOverlay.addEventListener('click', (e) => { if (e.target === helpOverlay) closeHelpModal(); });
   }
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHelpModal(); });
-
-  // The Browser access card is always visible, and its dot reflects whether any
-  // browser currently holds access.
-  const bac = document.getElementById('browser-access-card');
-  if (bac) bac.style.display = '';
 
 
   // Elements

@@ -575,7 +575,6 @@ html, body {
   border-left: 2px solid var(--accent, #2dd4a7);
   padding-left: 8px;
 }
-#browser-access-card .card-btn { font-size: 10px; padding: 3px 8px; }
 
 /* --- Cloud card ----------------------------------------------------------- */
 #cloud-results {

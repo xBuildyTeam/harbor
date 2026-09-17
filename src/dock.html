@@ -178,40 +178,6 @@
              engine here was right; putting the UI here was not. -->
       </section>
 
-      <!-- Card: Browser access. ITS OWN CARD, because inside the pairing card it
-           read as a pairing step - and it is not one. Pairing connects this PC to
-           a Wave OS account, once. This grants ONE browser on this PC temporary
-           read access to local files, and most people never need it. -->
-      <section id="browser-access-card" class="status-card">
-        <div class="card-header">
-          <span class="card-title">
-            <span class="status-dot" id="browser-access-dot"></span>
-            Browser access
-          </span>
-          <button id="btn-browser-help" class="card-btn" title="What is this for?">What&#39;s this?</button>
-        </div>
-        <div class="card-body">
-          <span class="card-subtitle">Optional</span>
-          <span style="color: var(--muted); font-size: 10px;">Not needed inside Harbor</span>
-        </div>
-        <div id="browser-grant-row" class="card-body" style="display:none;">
-          <span class="card-subtitle">Approve a browser</span>
-          <span id="browser-grant-text" class="interactive-text"
-            title="Give a browser on this PC full read access to your files">Allow a browser&hellip;</span>
-        </div>
-        <div id="browser-grant-code-row" class="card-body" style="display:none; flex-direction:column; align-items:flex-start; gap:6px;">
-          <span class="card-subtitle">Type this in Wave OS to allow full local access</span>
-          <span id="browser-grant-code" style="font-size:24px; font-weight:700; letter-spacing:4px; font-family:monospace;"></span>
-          <span id="browser-grant-countdown" class="card-subtitle"></span>
-          <span class="card-subtitle" style="opacity:.75;">Read-only. Revoked when Harbor quits.</span>
-        </div>
-        <div id="browser-grant-active-row" class="card-body" style="display:none;">
-          <span class="card-subtitle">Allowed browsers</span>
-          <span id="browser-grant-active-text" class="interactive-text"
-            title="Click to revoke all browser access">None</span>
-        </div>
-      </section>
-
       <!-- Card 5: Quick Actions Row -->
       <section class="quick-actions-row">
         <button id="btn-chat" class="quick-btn">
@@ -240,8 +206,11 @@
 
     <!-- Help Modal Layer. Written because Eddie could not tell what "Allow
          another browser" was for, and a feature nobody can explain is a feature
-         nobody can trust. Each card says what the thing is, and - the part
-         usually missing - when you do NOT need it. -->
+         nobody can trust. In v3.13.0 that feature was DELETED rather than
+         explained better - three attempts at explaining it had already failed,
+         which was the evidence that the problem was the feature and not the
+         wording. The rest of this modal stays: the reasoning applies to
+         everything here, and now there is one less thing to explain. -->
     <div id="help-modal" class="modal-overlay">
       <div class="modal-box help-box">
         <h3 class="modal-title">What each part of Harbor does</h3>
@@ -294,19 +263,6 @@
             <div class="help-card-title">File server</div>
             <p>The small server inside Harbor that actually reads files off the disk. It listens on this PC only, at an address nothing outside can dial.</p>
             <p class="help-note">Nothing to configure. The eye icon hides the address for screen sharing.</p>
-          </div>
-
-          <div class="help-card">
-            <div class="help-card-title">Browser access &mdash; and when to ignore it</div>
-            <p>When you open Wave OS <em>inside Harbor</em>, it can already read every file on this PC. That is automatic and needs no code.</p>
-            <p>A normal browser &mdash; Chrome or Edge &mdash; cannot, because Harbor has no way to know it is really you rather than a random website. So a browser gets access only if you click here for a code and type it into Wave OS. It lasts 8 hours, covers that one browser, and disappears when Harbor quits.</p>
-            <p class="help-note"><strong>If you use Wave OS inside Harbor and on your phone, you never need this.</strong> It exists for shared and lab computers, where each person should get their own temporary access instead of a permanent one.</p>
-          </div>
-
-          <div class="help-card">
-            <div class="help-card-title">Allowed browsers</div>
-            <p>How many browsers currently hold that temporary access, and when the first one runs out. Click it to revoke all of them immediately.</p>
-            <p class="help-note">Quitting Harbor also revokes every one.</p>
           </div>
 
         </div>
