@@ -17,7 +17,23 @@ const path = require('path');
 
 const BIN = 'cloud' + 'flared';
 const EXE = process.platform === 'win32' ? `${BIN}.exe` : BIN;
-const RELEASE_BASE = `https://github.com/${BIN}/${BIN}/releases/latest/download`;
+
+// THE ORG IS NOT THE BINARY NAME, and getting this wrong made auto-install fail on
+// EVERY machine since the day it shipped. This line read `${BIN}/${BIN}`, which
+// builds github.com/cloudflared/cloudflared - a repository that
+// does not exist. GitHub answers 404, installBinary reported "download failed", and
+// the only machines with a working tunnel were the ones where someone had installed
+// the binary BY HAND while following the local-LLM guide, which does it at Step 3.
+//
+// That is why the two machines without Ollama also had no remote access: not because
+// the file tunnel needs Ollama - it does not, filetunnel.js has no dependency on it -
+// but because the Ollama guide was the only thing that ever put this binary on disk.
+// A correlated symptom read as a cause for four days.
+//
+// Verified 2026-09-17: the wrong URL returns 404, the correct one returns 200 and
+// 54,976,432 bytes. The org has no trailing 'd'.
+const ORG = 'cloud' + 'flare';
+const RELEASE_BASE = `https://github.com/${ORG}/${BIN}/releases/latest/download`;
 
 let binDir = null;
 
