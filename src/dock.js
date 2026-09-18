@@ -753,6 +753,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const remoteRow = document.getElementById('remote-row');
     const remoteText = document.getElementById('remote-status-text');
+    const btnToggleRemote = document.getElementById('btn-toggle-remote');
 
     async function refreshRemote() {
       if (!remoteRow || !remoteText || !api.getRemoteStatus) return;
@@ -760,6 +761,14 @@ document.addEventListener('DOMContentLoaded', () => {
       try { st = await api.getRemoteStatus(); } catch (e) { st = null; }
       if (!st || !st.paired) { remoteRow.style.display = 'none'; return; }
       remoteRow.style.display = 'flex';
+      // Driven off the same `st` the text below is driven off, so the button and
+      // the words beside it cannot describe different states.
+      if (btnToggleRemote) {
+        btnToggleRemote.textContent = st.enabled ? 'Turn Off' : 'Turn On';
+        btnToggleRemote.title = st.enabled
+          ? 'Stop publishing this PC to Wave OS'
+          : 'Let Wave OS reach the folders you have shared. Installs the tunnel if needed (~70MB, no admin rights).';
+      }
       if (st.enabled && st.url) {
         remoteText.textContent = 'On';
         remoteText.title = st.url;
@@ -795,6 +804,12 @@ document.addEventListener('DOMContentLoaded', () => {
           remoteText.title = 'Click to allow Wave OS to reach this PC from anywhere';
         }
       }
+    }
+
+    // Both controls, one handler. The button delegates to the span's click so the
+    // install-at-point-of-failure path below has exactly one implementation.
+    if (btnToggleRemote && remoteText) {
+      btnToggleRemote.addEventListener('click', () => remoteText.click());
     }
 
     if (remoteText) {
