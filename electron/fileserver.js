@@ -14,6 +14,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const fileindex = require('./fileindex');
+const streamgrant = require('./streamgrant');
 const crypto = require('crypto');
 
 const DEFAULT_PORT = 47615;       // SHARED scope. The tunnel points here.
@@ -524,7 +525,74 @@ function handle(req, res, scope, getConfig) {
             + 'For access from another device, share a folder and turn on remote access.',
     });
   }
+  // STREAM GRANT FALLBACK - the narrow concession that lets remote media stream.
+  //
+  // A <video> element cannot send a header, so header-only auth means remote video can
+  // never stream from the tunnel and must be buffered whole through the relay instead
+  // (~1.9 MB/s, no partial content, so playback cannot start until the last byte lands).
+  // The device token is still refused here, for the reason stated above: it is
+  // long-lived, authorises the whole share, and this scope is tunnelled, so it would
+  // land in a third-party edge network's request logs. A grant is a different object -
+  // one file, read-only, idle-expiring, per-launch, unguessable, and not derived from
+  // any stored credential.
+  //
+  // Fenced on four sides, every one of which is load-bearing:
+  //   - SHARED SCOPE ONLY. The local scope serves the WHOLE DISK and has its own
+  //     ?token= concession already; keeping the two credential worlds disjoint is the
+  //     same invariant as `accepted` above.
+  //   - /stream ONLY. /list and /sign are called by fetch(), which can set headers.
+  //   - READ METHODS ONLY. Belt and braces: the method guard above already refuses a
+  //     write to /stream, but a grant must never be a write credential even if some
+  //     future route becomes writable.
+  //   - EXACTLY ONE RESOLVED PATH. Redeemed against the path that comes out of
+  //     resolveForScope, not the raw query string, so traversal or a symlink pointing
+  //     outside a shared folder resolves differently and fails to match. Unsharing a
+  //     folder also kills its grants for free, because the resolve fails before the
+  //     grant is ever consulted.
+  if (!authed && scope === 'shared' && route === '/stream' && isRead) {
+    const grantToken = url.searchParams.get('grant');
+    if (grantToken) {
+      const target = resolveForScope(url.searchParams.get('path'), scope, cfg.folders);
+      if (target && streamgrant.redeem(grantToken, target)) authed = true;
+    }
+  }
+
   if (!authed) return send(res, 401, { error: 'Unauthorized' });
+
+  // MINT A GRANT. Requires a real header credential - a grant can never mint another
+  // grant, because the fallback above is gated on route === '/stream' and this is
+  // '/sign'. Shared scope only: the local scope has no need of it.
+  if (route === '/sign') {
+    if (scope !== 'shared') {
+      return send(res, 404, {
+        error: 'Not available on the local scope',
+        detail: 'Local media streams with ?token= already.',
+      });
+    }
+    const requested = url.searchParams.get('path');
+    const target = resolveForScope(requested, scope, cfg.folders);
+    if (!target) return send(res, 403, { error: 'Path is not inside a shared folder' });
+    let sstat;
+    try {
+      sstat = fs.statSync(target);
+    } catch (e) {
+      return send(res, 404, { error: 'Not found' });
+    }
+    if (sstat.isDirectory()) return send(res, 400, { error: 'Is a directory' });
+    const minted = streamgrant.mint(target);
+    // The path is echoed back exactly as given, because the caller builds the URL from
+    // it and re-encoding it here is how a mismatch gets introduced.
+    return send(res, 200, {
+      ok: true,
+      url: '/stream?path=' + encodeURIComponent(requested) + '&grant=' + minted.token,
+      grant: minted.token,
+      bytes: sstat.size,
+      // Both windows, named, so a caller can decide when to re-sign rather than
+      // discovering the expiry as a 401 halfway through a film.
+      idle_seconds: minted.idleSeconds,
+      absolute_seconds: minted.absoluteSeconds,
+    });
+  }
 
   if (route === '/health') {
     // grants:false is here so the Wave OS half can hide its "Approve this browser"

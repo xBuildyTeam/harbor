@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const ollama = require('./ollama');
 const tunnel = require('./tunnel');
 
+const streamgrant = require('./streamgrant');
 const settingsPath = path.join(app.getPath('userData'), 'wave-dock-settings.json');
 const cfbin = require('./cfbin');
 const fileindex = require('./fileindex');
@@ -304,6 +305,7 @@ function registerIpcHandlers({
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     fileserver.stopFileServer();
     filetunnel.stopFileTunnel();
+    streamgrant.revokeAll();
   }
 
   if (getSettingsData().deviceToken) startHeartbeat();
@@ -360,6 +362,12 @@ function registerIpcHandlers({
     if (!want) {
       filetunnel.disarmWatchdog();
       filetunnel.stopFileTunnel();
+      // Turning remote access off must REVOKE outstanding stream grants, not merely
+      // stop issuing new ones. A grant lives on its own idle window, so without this
+      // the off switch would leave live read capabilities for up to ten minutes after
+      // the owner explicitly withdrew access - and "off" has to mean off.
+      const revokedGrants = streamgrant.revokeAll();
+      if (revokedGrants) console.log('[harbor] revoked ' + revokedGrants + ' stream grant(s) on remote-access off');
       await sendHeartbeat(true); // republish immediately with tunnel_url: null
       return { ok: true, enabled: false, url: null };
     }
